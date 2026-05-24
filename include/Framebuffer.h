@@ -17,7 +17,10 @@ public:
 
     void clear(Color c);
     void setPixel(int x, int y, Color c);
-    const std::vector<Color>& getPixels() const{return pixels;};
+    const std::vector<Color>& getPixels() const{return pixels;}
+
+    int getWidth() const { return width; }
+    int getHeight() const { return height; }
 };
 
 

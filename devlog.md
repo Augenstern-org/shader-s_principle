@@ -4,7 +4,7 @@
 
 用 C++20 在 CPU 上模拟 GPU 渲染管线（软渲染器）。使用 GLFW + OpenGL 仅作为显示输出，核心渲染逻辑全部在 CPU 端实现。
 
-技术栈：CMake + C++20 + OpenGL + GLFW + GLM
+技术栈：CMake + C++20 + OpenGL + GLFW + GLM + GLAD
 
 ---
 
@@ -26,11 +26,11 @@
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 基础类型 | `include/Types.hpp` | Color、Vertex 等基础数据结构和数学类型定义 |
-| 帧缓冲 | `include/Framebuffer.hpp` `src/Framebuffer.cpp` | 像素缓冲区，支持清屏和读写像素 |
-| 显示输出 | `include/Screen.hpp` `src/Screen.cpp` | GLFW 窗口管理，把 Framebuffer 贴到窗口 |
-| 着色器 | `include/Shader.hpp` `src/Shader.cpp` | 顶点/片段着色器的接口和实现 |
-| 管线 | `include/Pipeline.hpp` `src/Pipeline.cpp` | 把顶点→着色器→光栅化→帧缓冲串起来 |
+| 基础类型 | `include/Types.h` | Color、Vertex 等基础数据结构和数学类型定义 |
+| 帧缓冲 | `include/Framebuffer.h` `src/Framebuffer.cpp` | 像素缓冲区，支持清屏和读写像素 |
+| 显示输出 | `include/Screen.h` `src/Screen.cpp` | GLFW 窗口管理，把 Framebuffer 贴到窗口 |
+| 着色器 | `include/Shader.h` `src/Shader.cpp` | 顶点/片段着色器的接口和实现 |
+| 管线 | `include/Pipeline.h` `src/Pipeline.cpp` | 把顶点→着色器→光栅化→帧缓冲串起来 |
 | 入口 | `src/main.cpp` | 程序入口，主循环 |
 
 ### 为什么这么拆分
@@ -40,7 +40,7 @@
 - 类之间的依赖关系模糊，不知道谁调用谁
 - 新人（包括未来的自己）打开代码不知道从哪读起
 
-按职责拆分后，每个文件只有一个核心职责。比如想看"像素怎么存"，直接打开 Framebuffer.hpp 就行。
+按职责拆分后，每个文件只有一个核心职责。比如想看"像素怎么存"，直接打开 Framebuffer.h 就行。
 
 ---
 
@@ -55,52 +55,67 @@
 
 | 文件 | 职责 |
 |------|------|
-| `CMakeLists.txt` | 构建配置 |
-| `include/Types.hpp` | 基础类型（本阶段只有 Color） |
-| `include/Framebuffer.hpp` | Framebuffer 类声明 |
+| `CMakeLists.txt` | 构建配置（根目录 + src/ 子目录） |
+| `include/Types.h` | 基础类型（本阶段只有 Color） |
+| `include/Framebuffer.h` | Framebuffer 类声明 |
 | `src/Framebuffer.cpp` | Framebuffer 实现 |
-| `include/Screen.hpp` | Screen 类声明 |
+| `include/Screen.h` | Screen 类声明 |
 | `src/Screen.cpp` | Screen 实现 |
 | `src/main.cpp` | 程序入口 |
 
 ### 各模块规格
 
 #### CMakeLists.txt
-- 项目名 `shader_s_principle`，C++20
-- 依赖：OpenGL (MODULE)、glfw3 (CONFIG)、glm (CONFIG)
-- 注意：GLFW 的 CMake target 名可能是 `glfw` 也可能是 `glfw3`，取决于你系统上的包。先用 `glfw`，如果找不到就试 `glfw3`
+- 项目名 `shader-s_principle`，C++20
+- 根 `CMakeLists.txt`：`include_directories(include)`，`add_subdirectory(src)`
+- `src/CMakeLists.txt`：`add_executable` + `target_link_libraries`
+- 依赖：OpenGL、glfw3（CONFIG）、glad（CONFIG）
+- 注意：GLFW 的 CMake target 名可能是 `glfw` 也可能是 `glfw3`，取决于你系统上的包。如果找不到就两个都试试
 
-#### Types.hpp
+#### Types.h
 - 只放 `Color` 结构体：三个 `float` 成员 `r, g, b`
 - 提供默认构造函数（初始化为黑色 0,0,0）和带参构造函数
+- `Color` 的内存布局是连续的三个 float，可以直接当 `const float*` 传给 OpenGL
 - 使用 `#pragma once` 或传统的 include guard
 
 #### Framebuffer
-- 成员：`width`、`height`、像素存储（`std::vector<Color>`）
-- 构造函数接收 `(int w, int h)`，分配 `w * h` 个像素
-- `clear(Color c)` 方法：把所有像素设为颜色 c
-- `setPixel(int x, int y, Color c)` 方法：在 (x, y) 位置写入颜色（将来光栅化用）
-- `const std::vector<Color>& pixels() const`：只读访问像素数据（Screen 需要读它上传纹理）
+- 成员：`width`（int）、`height`（int）、像素存储 `pixels`（`std::vector<Color>`）
+- 构造函数接收 `(int w, int h)`，初始化列表里分配 `w * h` 个像素（默认黑色）
+- `clear(Color c)`：把所有像素设为颜色 c（`pixels.assign(size, c)`）
+- `setPixel(int x, int y, Color c)`：在 (x, y) 位置写入颜色。内部用 `pixels[y * width + x] = c` 做一维索引
+- `getPixels()`：返回 `const std::vector<Color>&`，只读访问像素数据（Screen 需要读它上传纹理）
+- `getWidth()`：返回帧缓冲宽度
+- `getHeight()`：返回帧缓冲高度
 
 #### Screen
-- 构造函数接收 `(int width, int height)`
-- 在构造函数中：初始化 GLFW、创建窗口、创建 OpenGL 纹理（用于把 CPU 像素贴到窗口上）
-- `present(const Framebuffer& fb)`：把 Framebuffer 的像素上传到 OpenGL 纹理，画全屏四边形显示
-- `bool isOpen() const`：检查窗口是否关闭
-- `GLFWwindow* window()`：获取窗口句柄（主循环需要）
-- 析构函数：清理 GLFW 资源
+- 成员：`width`、`height`、`window`（`GLFWwindow*`）、`title`（`const char*`）、`textureID`（`GLuint`）
+- 构造函数接收 `(int w, int h, const char* title)`
+- 在构造函数中：
+  1. 调用 `glfwInit()` 初始化 GLFW
+  2. `glfwCreateWindow(width, height, title, nullptr, nullptr)` 创建窗口
+  3. `glfwMakeContextCurrent(window)` 设置 OpenGL 上下文
+  4. **通过 GLAD 加载 OpenGL 函数**：`gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)`。GLAD 是一个 OpenGL 函数加载器，必须在调用任何 OpenGL 函数之前初始化。如果 GLAD 加载失败，销毁窗口并终止 GLFW
+  5. `glGenTextures` + `glBindTexture` + `glTexParameteri` 创建一个 OpenGL 纹理，用于后续把 CPU 像素上传到 GPU 显示
+  6. `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)` 确保 RGB 三个 float（12 字节）的像素行不会被 OpenGL 做字节对齐填充
+- `present(const Framebuffer& fb)`：把 Framebuffer 的像素通过 `glTexImage2D` 上传到纹理，然后画一个全屏四边形显示。纹理坐标原点在 OpenGL 中是左下角，而屏幕原点在左上角，所以四边形顶点需要翻转 y 轴——注释里标明了"左下/右下/右上/左上"
+- `isOpen()`：返回 `!glfwWindowShouldClose(window)`，封装窗口关闭检查
+- `getWindow()`：返回 `GLFWwindow*` 指针，供主循环使用
+- 析构函数：调用 `glfwTerminate()` 清理资源
 
 #### main.cpp
-- 创建 `Screen(800, 600)` 和 `Framebuffer(800, 600)`
-- 主循环：清屏 → present → 处理窗口事件
+- 创建 `Screen screen(WIDTH, HEIGHT, "Shader's principle")` 和 `Framebuffer(WIDTH, HEIGHT)`
+- 主循环：清屏 → present → `glfwPollEvents()` 处理窗口事件
+- 条件用 `glfwWindowShouldClose(screen.getWindow())` 检测窗口关闭
 - 检查窗口创建是否成功，失败则返回 -1
 
 ### 关键注意事项
 
-1. **OpenGL 纹理上传的数据格式**：`glTexImage2D` 期望 `GL_RGB` + `GL_FLOAT` 对应 `Color` 的 `{r, g, b}` 内存布局。因为 Color 是三个连续的 float，所以直接 `reinterpret_cast<const float*>(pixels.data())` 就可以传给 OpenGL。
-2. **纹理坐标**：OpenGL 的纹理坐标原点在左下角，而屏幕/图像通常原点在左上角。如果贴出来画面上下颠倒，需要在四边形顶点里翻转 y 轴。
-3. **上一版的 bug**：`Screen::present()` 里用的是成员变量 `frame_buffer` 而不是参数 `fb`。这次注意参数用起来。
-4. **GLFW 初始化**：必须在创建窗口之前调用 `glfwInit()`，程序退出前调用 `glfwTerminate()`。
+1. **GLAD 的作用**：现代 OpenGL 的函数不是直接可用的——需要通过函数加载器（loader）在运行时获取函数指针。GLAD 就是这个加载器。`#include <glad/glad.h>` 必须在所有 OpenGL 相关 include 之前（包括 GLFW），否则会编译报错。OpenGL 本身只是一个规范，真正的函数实现在显卡驱动里，所以需要 GLAD 去"问"驱动要函数地址。
+2. **OpenGL 纹理上传的数据格式**：`glTexImage2D` 期望 `GL_RGB` + `GL_FLOAT` 对应 `Color` 的 `{r, g, b}` 内存布局。因为 Color 是三个连续的 float，所以直接把 `getPixels().data()`（`const Color*`）传给 OpenGL 即可，内存布局天然匹配。不需要 reinterpret_cast。
+3. **纹理坐标**：OpenGL 的纹理坐标原点在左下角，而屏幕/图像通常原点在左上角。如果贴出来画面上下颠倒，需要在四边形顶点里翻转 y 轴。本项目的 `present()` 已经处理好了——纹理坐标 y 值做了翻转。
+4. **上一版的 bug**：上一版的 `Screen::present()` 里用的是成员变量而不是参数。这次注意参数 `fb` 用起来。
+5. **GLFW 初始化**：必须在创建窗口之前调用 `glfwInit()`，程序退出前调用 `glfwTerminate()`。`glfwInit` 失败时 `glfwCreateWindow` 会返回 `nullptr`。
+6. **构造函数失败处理**：Screen 的构造函数可能失败（GLFW 初始化失败、窗口创建失败、GLAD 加载失败）。失败时析构函数仍会调用 `glfwTerminate()`。目前的实现是静默处理——失败时 `window` 成员为 `nullptr`，主循环通过 `glfwWindowShouldClose` 检测到并退出。
 
 ### 本阶段完成后项目的文件结构
 
@@ -108,14 +123,564 @@
 shader-s_principle/
 ├── CMakeLists.txt
 ├── devlog.md
+├── plan.md
 ├── include/
-│   ├── Types.hpp
-│   ├── Framebuffer.hpp
-│   └── Screen.hpp
+│   ├── Types.h
+│   ├── Framebuffer.h
+│   └── Screen.h
 └── src/
+    ├── CMakeLists.txt
     ├── Framebuffer.cpp
     ├── Screen.cpp
     └── main.cpp
 ```
 
 ---
+
+## 阶段 2：画第一个三角形
+
+**目标**：在屏幕中央画一个白色的三角形。三个顶点坐标硬编码在 NDC 空间中，经视口变换后用手写光栅化算法写入 Framebuffer。
+
+**为什么这是第二步**：
+阶段 1 有了可运行的窗口和像素缓冲区，但屏幕上只有一个纯色背景——什么都没画。阶段 2 是整个软渲染器最核心的一步：**光栅化**。光栅化回答了"怎么把三个顶点变成一堆像素"这个问题，理解了它就理解了 GPU 渲染管线最关键的环节。
+
+本阶段故意把顶点坐标和三角形颜色都硬编码，不引入着色器抽象。目的是让光栅化逻辑完整、清晰、可验证，后续阶段再逐步把硬编码的部分抽成可替换的函数。
+
+### 本阶段的数据流
+
+```
+[3 个 NDC 顶点]  →  [视口变换]  →  [屏幕坐标顶点]  →  [光栅化]  →  [像素写入 Framebuffer]
+    Vertex         viewport          vec2         边缘函数         setPixel()
+```
+
+整个数据流在 `Pipeline::drawTriangle()` 一个函数里完成。不引入着色器、不引入顶点缓冲区——一切都显式地写在一个函数里，方便理解和调试。
+
+### 需要修改/创建的文件
+
+| 文件 | 操作 | 职责 |
+|------|------|------|
+| `include/Types.h` | 修改 | 新增 `#include <glm/glm.hpp>`，新增 `Vertex` 结构体 |
+| `include/Framebuffer.h` | 已在阶段 1 补齐 | `getWidth()`、`getHeight()` 已添加 |
+| `include/Pipeline.h` | **新建** | Pipeline 类声明 |
+| `src/Pipeline.cpp` | **新建** | Pipeline 实现：视口变换 + 光栅化 |
+| `src/main.cpp` | 修改 | 硬编码三个顶点，调用 Pipeline 画三角形 |
+| `CMakeLists.txt`（根） | 修改 | 新增 `find_package(glm CONFIG REQUIRED)` |
+| `src/CMakeLists.txt` | 修改 | 新增 `Pipeline.cpp` 编译，新增 `glm::glm` 链接 |
+
+### 各模块规格
+
+#### Types.h 新增内容
+
+引入 GLM 数学库，新增顶点类型。
+
+- 新增 `#include <glm/glm.hpp>`
+- 新增 `Vertex` 结构体：
+  - 成员：
+    - `glm::vec4 position` — 顶点在 NDC 空间的位置。NDC（归一化设备坐标）是渲染管线中的一个标准坐标空间，x 和 y 的有效范围是 [-1, 1]，分别对应屏幕的左/右边界和下/上边界。z 分量在阶段 2 暂不使用（填 0），w 分量固定为 1.0（表示这是一个点位置，不是方向向量）
+  - 成员函数：
+    - `Vertex()`：默认构造函数，position 初始化为 (0, 0, 0, 1)
+    - `Vertex(const glm::vec4& pos)`：带参构造函数，直接设置 position
+
+```cpp
+// Vertex 内存布局示意
+// |  x  |  y  |  z  |  w  |
+// |  4 bytes each (float) |
+// |  total = 16 bytes     |
+```
+
+#### Pipeline（新建）
+
+Pipeline 是本阶段的**核心新模块**。它负责把三个顶点坐标转换为屏幕上的像素。
+
+**为什么 Pipeline 是独立的类而不是写在 main 里**：
+如果现在把光栅化逻辑写在 main.cpp 里，20 行代码能搞定。但阶段 3 引入顶点着色器、阶段 4 引入片段着色器后，管线逻辑会膨胀到上百行。届时再拆分会比现在麻烦——因为你在调试时已经习惯了"三角形代码在 main 里"这个假象。提前给管线一个独立的"家"，后续扩展只是往家里添家具，而不是搬家。
+
+**头文件 `include/Pipeline.h`**：
+- `class Pipeline`：使用 `#pragma once` 或 include guard
+  - 需要 include `Types.h`（Vertex 类型）和 `Framebuffer.h`（Framebuffer 引用参数需要完整类型定义，不能只前向声明）
+  - 公开方法：
+    - `void drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1, const Vertex& v2)`  
+      接收一个 Framebuffer 引用和三个顶点，执行视口变换和光栅化，将三角形像素写入 Framebuffer
+  - 注意：本阶段 Pipeline 没有成员变量。它可以是一个无状态的"函数对象"（其实就是把一堆函数打包在一个类里）。
+
+**实现文件 `src/Pipeline.cpp`**：
+
+需要的 include：
+```cpp
+#include "Pipeline.h"
+#include "Framebuffer.h"   // Framebuffer::getWidth(), getHeight(), setPixel()
+#include <glm/glm.hpp>     // glm::vec2, glm::vec4
+#include <cmath>           // std::floor, std::ceil
+#include <algorithm>       // std::min, std::max
+```
+
+包含两个静态辅助函数和一个公开方法。
+
+- **静态函数** `glm::vec2 viewportTransform(const glm::vec4& ndc, int width, int height)`
+  - 职责：将 NDC 坐标转换为屏幕像素坐标
+  - 输入：ndc 顶点的 position（glm::vec4），帧缓冲的 width 和 height
+  - 输出：屏幕空间的 2D 浮点坐标（glm::vec2）
+  - 变换公式：
+    ```
+    screen_x = (ndc.x + 1.0) * 0.5 * width
+    screen_y = (ndc.y + 1.0) * 0.5 * height
+    ```
+  - 解释：`(ndc + 1.0) * 0.5` 把 [-1, 1] 映射到 [0, 1]，再乘以宽/高映射到像素坐标。注意 ndc.y = -1 对应屏幕底部（screen_y = 0），ndc.y = 1 对应屏幕顶部（screen_y = height）
+  - 返回类型是 float vec2（不是 int），保留子像素精度
+
+- **静态函数** `float edgeFunction(const glm::vec2& a, const glm::vec2& b, const glm::vec2& p)`
+  - 职责：计算点 p 相对于有向边 AB 的"边函数"值（2D 叉积）
+  - 公式：`E(A, B, P) = (P.x - A.x) * (B.y - A.y) - (P.y - A.y) * (B.x - A.x)`
+  - 几何含义：正值表示 P 在边 AB 的左侧，负值表示在右侧，零表示在边上
+  - 这是光栅化的核心数学工具——用三次边函数就能判断一个像素是否在三角形内部
+
+- **公开方法** `void Pipeline::drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1, const Vertex& v2)`
+  - 执行流程（5 步）：
+    1. **视口变换**：调用 `viewportTransform` 将三个 NDC 顶点转为屏幕坐标 `p0, p1, p2`
+    2. **计算包围盒**：取三个屏幕坐标的 min/max，得到包围三角形的最小矩形。包围盒夹到 `[0, width-1] × [0, height-1]`，防止访问越界
+    3. **逐像素遍历**：双重 for 循环遍历包围盒内的每个像素
+    4. **内部测试**：对每个像素中心 `(x + 0.5, y + 0.5)` 计算三条边的边函数值 `e0, e1, e2`。如果三者同号（全 ≥0 或全 ≤0），像素在三角形内部
+    5. **写入像素**：内部像素调用 `fb.setPixel(x, y, Color(1,1,1))` 写入白色
+  - 关键实现细节：
+    - 像素采样点在中心 `(x + 0.5, y + 0.5)`，而非像素的整数角点。这是 GPU 的标准采样位置
+    - 边函数比较用 `>= 0` 和 `<= 0`（包含等号），确保恰好落在边上的像素也会被绘制（避免相邻三角形之间出现缝隙）
+    - 包围盒用 `std::floor` 和 `std::ceil` 处理，不遗漏边缘上的子像素部分
+
+#### main.cpp 修改
+
+相比阶段 1，main.cpp 增加了：
+
+- 新增 `#include "Pipeline.h"`
+- 在渲染循环之前定义三个顶点（NDC 坐标，形成一个位于屏幕中央的三角形）：
+  ```cpp
+  Vertex v0(glm::vec4(-0.5f, -0.5f, 0.0f, 1.0f));  // 左下
+  Vertex v1(glm::vec4( 0.5f, -0.5f, 0.0f, 1.0f));  // 右下
+  Vertex v2(glm::vec4( 0.0f,  0.5f, 0.0f, 1.0f));  // 上方中央
+  ```
+  这三个点构成一个底边水平的等腰三角形，位于屏幕正中央。为什么选这个形状：等腰三角形容易目测是否正确——两边对称，顶部尖角居中，如果代码有 bug（比如 x 方向偏移或 y 轴翻转）一眼就能看出来。
+- 创建 `Pipeline pipeline;` 对象
+- 渲染循环内变为三个步骤：
+  ```cpp
+  fb.clear(Color{0.1f, 0.3f, 0.5f});            // 1. 清屏（深蓝灰背景）
+  pipeline.drawTriangle(fb, v0, v1, v2);        // 2. 画三角形（白色）
+  screen.present(fb);                           // 3. 显示到窗口
+  ```
+
+#### CMakeLists.txt 修改
+
+- 根 `CMakeLists.txt`：在 `find_package` 区域新增一行 `find_package(glm CONFIG REQUIRED)`
+  - GLM 是纯头文件的数学库（只有 `.hpp`，不需要编译 .cpp），CMake 通过 CONFIG 模式找到它
+- `src/CMakeLists.txt`：
+  - `add_executable` 新增 `Pipeline.cpp`
+  - `target_link_libraries` 新增 `glm::glm`
+
+### 关键注意事项
+
+1. **顶点绕序与边函数符号**：三个顶点的顺序决定了边函数值的符号。如果顶点按逆时针（CCW）排列（在屏幕坐标系，x 向右 y 向上），内部像素的三条边函数值全为正。如果按顺时针排列则全为负。本阶段用"同号判断"（全正或全负都算内部），所以两种绕序都能正确光栅化。但如果你没有检查"同号"而是只检查"全正"，换一种绕序就会什么都画不出来——排查时先检查顶点顺序。
+2. **像素中心采样的原因**：边函数测试点选在 `(x + 0.5, y + 0.5)` 而不是 `(x, y)`。因为像素不是一个无限小的点，而是一个单位正方形，它的"代表位置"是中心。如果测试角点 `(x, y)`，三角形在像素角上"擦过"时会出现不自然的锯齿。这是 GPU 硬件的统一做法。
+3. **包围盒越界保护**：视口变换产生的屏幕坐标可能落在 [0, width) × [0, height) 之外（比如三角形的某个顶点在屏幕外）。`setPixel` 不做越界检查，所以包围盒必须用 `std::max`/`std::min` 夹到有效范围内。忘记夹会导致 vector 越界访问，程序崩溃。
+4. **NDC 坐标系与屏幕坐标系的对应**：
+   - NDC：原点在屏幕中心，x 向右，y 向上。可见范围 [-1, 1]
+   - 屏幕像素坐标：原点在左下角，(0,0) 是左下角第一个像素，(width-1, height-1) 是右上角最后一个像素
+   - 视口变换后，NDC (-1, -1) → 屏幕左下，NDC (1, 1) → 屏幕右上。这和 OpenGL 的约定一致
+5. **边函数退化情况**：如果三个顶点共线（在一条直线上），所有边函数值为 0，三角形退化，画不出任何像素。调试时如果三角形莫名消失，检查是不是顶点坐标写错了（比如三个点都在 x 轴上）。
+6. **GLM 的坐标系约定**：GLM 默认使用和 OpenGL 一致的坐标系——右手坐标系，NDC 的 z 范围是 [-1, 1]。本阶段 z 分量还不参与计算，只需填 0 即可。关于 GLM 的更多细节（矩阵乘法顺序、透视投影等）会在阶段 3 用到 MVP 矩阵时详细展开。
+7. **为什么着色器还不出现**：阶段 2 里顶点着色器的工作（NDC 坐标 → 什么都不做，因为顶点已经手动写在 NDC 了）和片段着色器的工作（返回白色）都硬编码在 Pipeline 里。当你手动改了三角形颜色或顶点位置，改动点在 main.cpp（顶点）和 Pipeline.cpp（颜色）两个不同的文件——这就是"着色器逻辑需要抽离"的信号。阶段 3 会把这个痛点变成引入着色器的动机。
+8. **精度与浮点比较**：边函数用 `>= 0` 和 `<= 0` 做判断。由于视口变换和顶点坐标都是有限精度的浮点数，边函数结果也是浮点数。理论上恰好落在边上的像素（边函数 = 0 精确）很少，大部分情况足够精确。不需要引入 epsilon 容差——那会带来更隐蔽的 bug（比如相邻三角形之间出现一条像素缝）。
+
+### 阶段 2 可选的验证方法
+
+完成阶段 2 后，除了用眼睛看屏幕上的三角形，还可以做以下修改来验证光栅化逻辑正确：
+
+- **改三角形颜色**：把 `Color(1,1,1)` 改成 `Color(1,0,0)`（红色），应该看到一个红色三角形
+- **改顶点位置**：把 v2 的 y 改成 -0.2，三角形应该变扁甚至翻转
+- **画在角落**：把三个顶点都加上 (0.7, 0.7)，三角形应该移到屏幕右上角
+- **画超大三角形**：把坐标放大到超出 [-1, 1]，三角形应该被屏幕边缘正确裁剪（不会崩溃）
+
+如果以上修改都得到预期结果，说明光栅化和包围盒裁剪逻辑都正确。
+
+### 本阶段完成后项目的文件结构
+
+```
+shader-s_principle/
+├── CMakeLists.txt
+├── devlog.md
+├── plan.md
+├── include/
+│   ├── Types.h
+│   ├── Framebuffer.h
+│   ├── Screen.h
+│   └── Pipeline.h          ← 新建
+└── src/
+    ├── CMakeLists.txt
+    ├── Framebuffer.cpp
+    ├── Screen.cpp
+    ├── Pipeline.cpp         ← 新建
+    └── main.cpp
+```
+
+---
+
+## 阶段 3：引入顶点着色器
+
+**目标**：把顶点变换逻辑从 Pipeline 中抽离为可替换的着色器函数，引入 MVP 矩阵。三角形可以在屏幕上移动和旋转。
+
+**为什么这是第三步**：
+阶段 2 的光栅化已经能把三个 NDC 坐标变成屏幕上的像素了。但顶点坐标是硬编码在 NDC 空间的——你想让三角形旋转，就不得不手动修改三个顶点的 position 值。这相当于每次都手工做一遍顶点变换，极其低效。
+
+真实 GPU 的做法是：你把顶点存在"模型空间"（也叫局部空间），然后 GPU 通过顶点着色器把它们变换到裁剪空间。这个变换用三个矩阵完成（MVP），对着色器来说只是做一次矩阵乘法。
+
+阶段 3 引入顶点着色器后，三角形代码分为两部分：
+- **不变的**：三个顶点在模型空间中的坐标（只定义一次，不需要动）
+- **变化的**：MVP 矩阵（每帧可以修改，驱动三角形移动/旋转）
+
+代码的修改点从"改顶点数据"变成了"改矩阵参数"——这正是 GPU 编程的核心思维。
+
+### 本阶段的数据流
+
+```
+[模型空间顶点]  →  [顶点着色器]  →  [裁剪空间坐标]  →  [视口变换]  →  [屏幕坐标]  →  [光栅化]  →  [像素写入]
+    Vertex         VertShader          vec4              viewport         vec2          边缘函数      setPixel()
+                   (MVP 矩阵)
+                      ↑
+                 [Uniforms]
+```
+
+对比阶段 2 的数据流，唯一的变化是**顶点着色器**这一步——原本直接被视口变换消费的 NDC 坐标，现在先经过一次可替换的着色器函数处理。
+
+### 核心概念：MVP 矩阵
+
+在图形学中，把一个 3D 模型的顶点从"模型空间"变换到"裁剪空间（NDC）"需要经过三个矩阵：
+
+| 矩阵 | 英文 | 变换 | 类比 |
+|------|------|------|------|
+| Model | 模型矩阵 | 局部空间 → 世界空间 | 把玩具从手里放到桌上（位置、旋转、缩放） |
+| View | 视图矩阵 | 世界空间 → 相机空间 | 用相机对准桌上的玩具 |
+| Projection | 投影矩阵 | 相机空间 → 裁剪空间 | 按下快门，3D 世界投影到 2D 照片 |
+
+最终变换公式：
+
+```
+clip_pos = Projection * View * Model * local_pos
+          ←——— 从右往左读 ———
+```
+
+`local_pos` 是 vec4，每个矩阵是 4×4，矩阵乘法从右往左依次施加：先 Model，再 View，最后 Projection。三位一体合称 MVP。
+
+**阶段 3 的简化**：本阶段三角形仍然是 2D 的（所有顶点 z=0），Projection 和 View 暂设为单位矩阵（即"什么都不做"），只通过 Model 矩阵做旋转。这让 MVP 概念完整地出现在代码里，但实际只有 M 在干活。阶段 4-5 会逐步启用 V 和 P。
+
+### 需要修改/创建的文件
+
+| 文件 | 操作 | 职责 |
+|------|------|------|
+| `include/Shader.h` | **新建** | 顶点着色器接口 + Uniforms 定义 |
+| `src/Shader.cpp` | **新建** | 内置顶点着色器实现 |
+| `include/Pipeline.h` | 修改 | 新增 `setVertexShader()`，`drawTriangle()` 签名加入 `Uniforms` |
+| `src/Pipeline.cpp` | 修改 | `drawTriangle()` 内部先调用顶点着色器，再视口变换 |
+| `src/main.cpp` | 修改 | 创建 MVP 矩阵和顶点着色器，每帧更新旋转角度 |
+| `src/CMakeLists.txt` | 修改 | 新增 `Shader.cpp` 编译 |
+
+### 各模块规格
+
+#### Shader.h（新建）
+
+这是项目中第一个"接口型"模块——它定义着色器"是什么"（签名/契约），而不定义着色器"怎么做"（具体实现留给 .cpp 或 main 里的 lambda）。
+
+需要的 include：
+```cpp
+#include <glm/glm.hpp>       // glm::mat4, glm::vec4
+#include <functional>         // std::function
+#include "Types.h"            // Vertex
+```
+
+包含一个结构体、一个类、一个命名空间。
+
+---
+
+**`Uniforms` 结构体** — 存放 MVP 三个矩阵
+
+> 为什么叫 Uniforms：在 GPU 术语中，"uniform" 指的是一次 draw call 中所有顶点共享的数据。三个 MVP 矩阵对所有顶点都是一样的，所以放在 Uniforms 里。
+
+成员：
+
+| 成员 | 类型 | 含义 |
+|------|------|------|
+| `model` | `glm::mat4` | 模型矩阵：局部空间 → 世界空间 |
+| `view` | `glm::mat4` | 视图矩阵：世界空间 → 相机空间 |
+| `projection` | `glm::mat4` | 投影矩阵：相机空间 → 裁剪空间 |
+
+成员函数：
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| 构造函数 | `Uniforms()` | 三个矩阵初始化为单位矩阵 `glm::mat4(1.0f)` |
+
+单位矩阵的含义：`mat4(1.0f)` 乘以任何向量都等于原向量。所以默认构造的 Uniforms 会让顶点"原封不动"地通过。这作为安全的默认值——如果使用者忘了设置 MVP，顶点不会飞掉。
+
+---
+
+**`VertexShader` 类** — 顶点着色器的包装
+
+> 为什么是类而不是裸 `std::function`：虽然顶点着色器本质上就是一个函数，但包一层类有几个好处：（1）给这个函数一个明确的名字和类型，而不是散落各处的 lambda；（2）阶段 4 引入 `FragmentShader` 时，两个类结构对称，Pipeline 的接口保持一致性；（3）将来如果要加成员（比如着色器名字、调试信息），不需要改调用方代码。
+
+成员：
+
+| 成员 | 类型 | 访问 | 说明 |
+|------|------|------|------|
+| `m_func` | `std::function<glm::vec4(const Vertex&, const Uniforms&)>` | private | 存储实际的着色器函数 |
+
+类型别名（public，方便调用方书写）：
+
+| 别名 | 定义 | 说明 |
+|------|------|------|
+| `ShaderFunc` | `std::function<glm::vec4(const Vertex&, const Uniforms&)>` | 顶点着色器函数签名：输入顶点 + Uniforms，输出裁剪空间 vec4 |
+
+成员函数：
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| 默认构造函数 | `VertexShader()` | `m_func` 设为一个"直通"着色器：返回 `v.position`，即认为顶点已经在 NDC 空间。行为等价于阶段 2 的无着色器模式 |
+| 带参构造函数 | `explicit VertexShader(ShaderFunc func)` | 用调用方传入的函数对象初始化 `m_func` |
+| `process` | `glm::vec4 process(const Vertex& v, const Uniforms& u) const` | 调用 `m_func(v, u)`，执行着色器逻辑 |
+
+---
+
+**`BuiltinVertexShaders` 命名空间** — 内置的顶点着色器函数
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `mvp` | `glm::vec4 mvp(const Vertex& v, const Uniforms& u)` | 标准 MVP 变换：`return u.projection * u.view * u.model * v.position;` |
+
+这是一个普通函数（不是类），可以直接取地址传给 `VertexShader` 的构造函数：`VertexShader(BuiltinVertexShaders::mvp)`。
+
+---
+
+#### Shader.cpp（新建）
+
+需要的 include：
+```cpp
+#include "Shader.h"
+```
+
+`Uniforms` 构造函数实现：
+```cpp
+Uniforms::Uniforms()
+    : model(1.0f), view(1.0f), projection(1.0f) {}
+```
+三个矩阵都用 `glm::mat4(1.0f)` 初始化为单位矩阵。
+
+`VertexShader` 默认构造函数实现：
+```cpp
+VertexShader::VertexShader()
+    : m_func([](const Vertex& v, const Uniforms&) { return v.position; }) {}
+```
+默认行为是"直通"——假设顶点已经是 NDC 坐标，不做任何变换。这个默认值和阶段 2 的行为完全一致，保证向后兼容。
+
+`VertexShader` 带参构造函数：
+```cpp
+VertexShader::VertexShader(ShaderFunc func)
+    : m_func(std::move(func)) {}
+```
+
+`VertexShader::process`：
+```cpp
+glm::vec4 VertexShader::process(const Vertex& v, const Uniforms& u) const {
+    return m_func(v, u);
+}
+```
+一行转发，但这是关键的一行——Pipeline 通过 `process()` 获得变换后的顶点位置，而 `process()` 内部具体做了什么（MVP？直通？自定义动画？）Pipeline 完全不需要知道。
+
+`BuiltinVertexShaders::mvp`：
+```cpp
+glm::vec4 BuiltinVertexShaders::mvp(const Vertex& v, const Uniforms& u) {
+    return u.projection * u.view * u.model * v.position;
+}
+```
+矩阵乘法顺序：Projection × View × Model × 顶点。注意矩阵乘法不满足交换律，顺序很重要。
+
+---
+
+#### Pipeline.h 修改
+
+相比阶段 2，Pipeline 多了两个东西：一个成员变量和一个新的 setter 方法，`drawTriangle` 签名多了一个参数。
+
+**新增 include**：
+```cpp
+#include "Shader.h"    // VertexShader, Uniforms
+```
+
+**新增成员**：
+
+| 成员 | 类型 | 访问 | 说明 |
+|------|------|------|------|
+| `m_vertexShader` | `VertexShader` | private | 当前绑定的顶点着色器 |
+
+**新增/修改的成员函数**：
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `setVertexShader` | `void setVertexShader(const VertexShader& shader)` | 设置顶点着色器。调用时机：渲染循环开始前设置一次（或在需要切换着色器时调用） |
+| `drawTriangle`（修改） | `void drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1, const Vertex& v2, const Uniforms& uniforms)` | 相比阶段 2 新增最后一个参数 `uniforms`。内部流程变为：着色器变换 → 视口变换 → 光栅化 |
+
+> 关于 `setVertexShader` 的设计：采用"先设置、后使用"的模式，而不是每次 `drawTriangle` 都传着色器函数。这是因为在真实 GPU 编程中，绑定着色器程序（`glUseProgram`）和发出绘制命令（`glDrawArrays`）是两个独立的步骤。这里的 `setVertexShader` 对应前者的概念。
+
+**静态辅助函数**（在 Pipeline.cpp 中，不变）：
+- `viewportTransform` — 签名和实现都不变，仍然是接收 NDC vec4 返回屏幕 vec2
+- `edgeFunction` — 不变
+
+---
+
+#### Pipeline.cpp 修改
+
+`drawTriangle` 方法的核心变化在步骤 1（视口变换之前），新增了"着色器处理"这一步。方法的执行流程从 5 步变为 6 步：
+
+1. **顶点着色器处理**（新增）：对三个顶点分别调用 `m_vertexShader.process(v0, uniforms)`、`m_vertexShader.process(v1, uniforms)`、`m_vertexShader.process(v2, uniforms)`，得到三个裁剪空间坐标 `glm::vec4`。取每个 vec4 的 `.x` 和 `.y` 作为 NDC 坐标传给下一步
+2. **视口变换**（同阶段 2）：将 NDC 坐标转为屏幕像素坐标 `p0, p1, p2`
+3. **计算包围盒**（同阶段 2）
+4. **逐像素遍历**（同阶段 2）
+5. **内部测试**（同阶段 2）
+6. **写入像素**（同阶段 2）
+
+步骤 1 的具体代码：
+
+```cpp
+glm::vec4 clip0 = m_vertexShader.process(v0, uniforms);
+glm::vec4 clip1 = m_vertexShader.process(v1, uniforms);
+glm::vec4 clip2 = m_vertexShader.process(v2, uniforms);
+
+glm::vec2 p0 = viewportTransform(clip0, fb.getWidth(), fb.getHeight());
+glm::vec2 p1 = viewportTransform(clip1, fb.getWidth(), fb.getHeight());
+glm::vec2 p2 = viewportTransform(clip2, fb.getWidth(), fb.getHeight());
+```
+
+注意 `viewportTransform` 的第一个参数从 `v.position`（vec4）变成了着色器返回的 `clip` 坐标（也是 vec4）。`viewportTransform` 函数内部只用了 `.x` 和 `.y`，所以着色器返回的 vec4 中只需 x、y 分量有意义即可。
+
+---
+
+#### main.cpp 修改
+
+相比阶段 2，main.cpp 的核心变化是：**三角形的顶点不再写死在 NDC 空间，而是写在模型空间；通过每帧更新 MVP 矩阵来驱动三角形的运动。**
+
+需要的额外 include：
+```cpp
+#include "Shader.h"                    // Uniforms, VertexShader, BuiltinVertexShaders
+#include <glm/gtc/matrix_transform.hpp>  // glm::rotate
+```
+
+**创建着色器和 Uniforms**（在渲染循环之前）：
+
+```cpp
+// 创建 MVP 矩阵
+Uniforms uniforms;
+uniforms.model = glm::mat4(1.0f);       // 初始为单位矩阵（之后每帧会被覆盖）
+uniforms.view = glm::mat4(1.0f);        // 阶段 3 暂用单位矩阵
+uniforms.projection = glm::mat4(1.0f);  // 阶段 3 暂用单位矩阵
+
+// 创建顶点着色器，使用内置的 MVP 变换
+VertexShader vertexShader(BuiltinVertexShaders::mvp);
+
+// 把着色器绑定到管线
+pipeline.setVertexShader(vertexShader);
+```
+
+**渲染循环内的变化**：
+
+```cpp
+while (!glfwWindowShouldClose(screen.getWindow())) {
+    // 用时间驱动旋转角度
+    float angle = (float)glfwGetTime();  // glfwGetTime() 返回程序启动到现在的秒数
+    uniforms.model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 0.0f, 1.0f));
+
+    fb.clear(Color{0.1f, 0.3f, 0.5f});
+    pipeline.drawTriangle(fb, v0, v1, v2, uniforms);  // 多传了一个 uniforms 参数
+    screen.present(fb);
+    glfwPollEvents();
+}
+```
+
+`glm::rotate` 的三个参数：
+- `glm::mat4(1.0f)`：从单位矩阵开始
+- `angle`：旋转角度（弧度）。`glfwGetTime()` 返回的秒数作为弧度值，大约每 6.28 秒转完一圈
+- `glm::vec3(0, 0, 1)`：绕 Z 轴旋转。在 2D 屏幕上，绕 Z 轴旋转就是"纸面上转圈"
+
+顶点定义不变（和阶段 2 相同）：
+```cpp
+Vertex v0(glm::vec4(-0.5f, -0.5f, 0.0f, 1.0f));  // 左下
+Vertex v1(glm::vec4( 0.5f, -0.5f, 0.0f, 1.0f));  // 右下
+Vertex v2(glm::vec4( 0.0f,  0.5f, 0.0f, 1.0f));  // 上方中央
+```
+
+这些坐标现在被理解为"模型空间"中的坐标。当 model 矩阵是单位矩阵时，它们恰好等于 NDC 坐标（因为 view 和 projection 也是单位矩阵）。
+
+---
+
+#### src/CMakeLists.txt 修改
+
+`add_executable` 新增 `Shader.cpp`：
+
+```cmake
+add_executable(test main.cpp
+        Screen.cpp
+        Framebuffer.cpp
+        Pipeline.cpp
+        Shader.cpp)
+```
+
+无需新增链接库——Shader 只依赖 GLM（已在链接列表中）。
+
+根 `CMakeLists.txt` 无需修改。
+
+### 关键注意事项
+
+1. **矩阵乘法顺序**：`projection * view * model * vertex`，从右往左读。写反了（比如 `vertex * model * view * projection`）编译会报错或运行时得到错误结果。GLM 使用列主序（column-major）存储，和 OpenGL 的约定一致，矩阵乘法符号 `*` 的行为也和数学定义一致。
+2. **`glfwGetTime()` 返回秒数**：值从 0 开始，每秒增加 1。直接用作弧度的话，角速度是 1 rad/s ≈ 57°/s，大约 6.28 秒旋转一圈。如果你想更快，乘以一个系数：`angle = (float)glfwGetTime() * 2.0f` 则每秒转 2 弧度。
+3. **默认着色器是"直通"的**：如果创建 Pipeline 后忘了调用 `setVertexShader()`，默认的 `VertexShader` 会直接返回 `v.position`（认为顶点已经是 NDC 坐标）。这不会崩溃，但你的 MVP 旋转不会生效——三角形静止不动。排查"三角形不转"问题时，先检查 `setVertexShader` 是否被调用。
+4. **NDC 的 z 分量现阶段是 0**：MVP 变换后，着色器返回的 vec4 包含 (x, y, z, w) 四个分量。阶段 3 的光栅化只看 x 和 y，z 和 w 暂时闲置。本阶段 w 始终为 1（因为没有透视投影），所以不需要做透视除法。阶段 5 引入深度测试时 z 会派上用场。
+5. **`std::function` 的开销**：`std::function` 内部使用了类型擦除（type erasure），调用时比裸函数指针多一次间接跳转。对于本项目的规模（每帧只处理 3 个顶点），这个开销完全可以忽略。如果未来每帧要处理上百万个顶点，可以换成模板或函数指针。
+6. **include 顺序**：`Shader.h` 需要 `glm/glm.hpp`（mat4、vec4）和 `<functional>`（std::function）。虽然 `Types.h` 已经 include 了 `glm/glm.hpp`，但 Shader.h 最好自己也 include——这遵守"不依赖间接 include"的原则。万一将来 Types.h 不再需要 glm，Shader.h 不会跟着坏掉。
+7. **为什么 Pipeline.cpp 里的 viewportTransform 和 edgeFunction 不需要改**：因为着色器抽离只影响"顶点从模型空间到 NDC"这一步。视口变换和光栅化的输入仍然是 NDC 坐标，所以它们完全不变。这是低耦合的体现——改了着色器模块，光栅化模块不受影响。
+
+### 阶段 3 可选的验证方法
+
+完成阶段 3 后，除了看三角形旋转，还可以做以下修改来验证着色器系统正确：
+
+- **改变旋转方向**：把 `glm::vec3(0, 0, 1)` 改成 `glm::vec3(0, 0, -1)`，三角形应该反向旋转
+- **改旋转速度**：把 `angle` 乘以 2.0 或 0.5，转速应相应变化
+- **绕 X 轴旋转**：改成 `glm::vec3(1, 0, 0)`，三角形应该绕水平轴"翻面"（在 2D 投影下表现为上下压缩-翻转）
+- **加位移**：`uniforms.model = glm::translate(glm::mat4(1.0f), glm::vec3(0.3f, 0.0f, 0.0f))`（不旋转），三角形应该整体右移
+- **自定义着色器**：不用 `BuiltinVertexShaders::mvp`，改用 lambda 写一个自定义变换：
+  ```cpp
+  VertexShader customShader([](const Vertex& v, const Uniforms& u) {
+      // 把三角形向右上角推
+      glm::vec4 pos = v.position;
+      pos.x += 0.3f;
+      pos.y += 0.3f;
+      return u.projection * u.view * u.model * pos;
+  });
+  pipeline.setVertexShader(customShader);
+  ```
+  三角形应该偏移到右上角。这验证了着色器的"可替换性"——换一个函数就换一种变换，Pipeline 代码一行不用改。
+
+- **故意写反矩阵乘法**：把 `mvp` 的实现改成 `v.position * u.model * u.view * u.projection`（GLM 编译不过，因为 vec4 × mat4 和 mat4 × vec4 是不同的运算）。这个错误帮你理解矩阵乘法不满足交换律。
+
+### 本阶段完成后项目的文件结构
+
+```
+shader-s_principle/
+├── CMakeLists.txt
+├── devlog.md
+├── plan.md
+├── include/
+│   ├── Types.h
+│   ├── Framebuffer.h
+│   ├── Screen.h
+│   ├── Pipeline.h
+│   └── Shader.h              ← 新建
+└── src/
+    ├── CMakeLists.txt
+    ├── Framebuffer.cpp
+    ├── Screen.cpp
+    ├── Pipeline.cpp
+    ├── Shader.cpp             ← 新建
+    └── main.cpp
+```

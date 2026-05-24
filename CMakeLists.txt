@@ -8,5 +8,6 @@ include_directories(include)
 find_package(glfw3 3.4 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(glad CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
 
 add_subdirectory(src)

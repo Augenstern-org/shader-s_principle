@@ -19,7 +19,7 @@ public:
     ~Screen();
 
     void present(const Framebuffer& fb);
-    bool isOpen();
+    bool isOpen() const;
     GLFWwindow* getWindow();
 
 };

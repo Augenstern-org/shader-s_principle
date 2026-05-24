@@ -56,6 +56,10 @@ void Screen::present(const Framebuffer& fb) {
     glfwSwapBuffers(window);
 }
 
+bool Screen::isOpen() const {
+    return !glfwWindowShouldClose(window);
+}
+
 GLFWwindow* Screen::getWindow() {
     return window;
 }

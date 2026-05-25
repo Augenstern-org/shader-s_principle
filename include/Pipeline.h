@@ -5,14 +5,16 @@
 #ifndef SHADER_S_PRINCIPLE_PIPELINE_H
 #define SHADER_S_PRINCIPLE_PIPELINE_H
 
-#include "Types.h"
 #include "Framebuffer.h"
-
+#include "Shader.h"
+#include "Types.h"
 
 class Pipeline {
-public:
-    void drawTriangle(Framebuffer& fb, const Vertex& v1, const Vertex& v2, const Vertex& v3);
+    VertexShader m_vertexShader;
+
+  public:
+    void setVertexShader(const VertexShader&);
+    void drawTriangle(Framebuffer&, const Vertex&, const Vertex&, const Vertex&, const Uniforms&);
 };
 
-
-#endif //SHADER_S_PRINCIPLE_PIPELINE_H
+#endif // SHADER_S_PRINCIPLE_PIPELINE_H

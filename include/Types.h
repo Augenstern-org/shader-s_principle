@@ -19,4 +19,4 @@ struct Vertex {
     Vertex(const glm::vec4& pos) : position(pos) {}
 };
 
-#endif //SHADER_S_PRINCIPLE_TYPES_H
+#endif // SHADER_S_PRINCIPLE_TYPES_H

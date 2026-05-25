@@ -5,8 +5,8 @@
 #ifndef SHADER_S_PRINCIPLE_SCREEN_H
 #define SHADER_S_PRINCIPLE_SCREEN_H
 
-#include <GLFW/glfw3.h>
 #include "Framebuffer.h"
+#include <GLFW/glfw3.h>
 
 class Screen {
     int width, height;
@@ -14,17 +14,13 @@ class Screen {
     const char* title;
     GLuint textureID;
 
-public:
+  public:
     Screen(int w, int h, const char* t);
     ~Screen();
 
     void present(const Framebuffer& fb);
     bool isOpen() const;
     GLFWwindow* getWindow();
-
 };
 
-
-#endif //SHADER_S_PRINCIPLE_SCREEN_H
-
-
+#endif // SHADER_S_PRINCIPLE_SCREEN_H

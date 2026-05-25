@@ -5,23 +5,22 @@
 #ifndef SHADER_S_PRINCIPLE_FRAMEBUFFER_H
 #define SHADER_S_PRINCIPLE_FRAMEBUFFER_H
 
-#include <vector>
 #include "Types.h"
+#include <vector>
 
 class Framebuffer {
     int width, height;
     std::vector<Color> pixels;
 
-public:
-    Framebuffer(int w, int h):width(w), height(h), pixels(w*h, Color()){}
+  public:
+    Framebuffer(int w, int h) : width(w), height(h), pixels(w * h, Color()) {}
 
     void clear(Color c);
     void setPixel(int x, int y, Color c);
-    const std::vector<Color>& getPixels() const{return pixels;}
+    const std::vector<Color>& getPixels() const { return pixels; }
 
     int getWidth() const { return width; }
     int getHeight() const { return height; }
 };
 
-
-#endif //SHADER_S_PRINCIPLE_FRAMEBUFFER_H
+#endif // SHADER_S_PRINCIPLE_FRAMEBUFFER_H

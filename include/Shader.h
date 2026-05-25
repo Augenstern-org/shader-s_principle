@@ -11,9 +11,7 @@
 struct Uniforms {
     glm::mat4 model, view, projection;
 
-    Uniforms()
-        : model(glm::mat4(1.0f)), view(glm::mat4(1.0f)),
-          projection(glm::mat4(1.0f)) {}
+    Uniforms();
 };
 
 class VertexShader {
@@ -22,12 +20,16 @@ class VertexShader {
   public:
     using ShaderFunc = std::function<glm::vec4(const Vertex&, const Uniforms&)>;
 
-    VertexShader()
-        : m_func([](const Vertex& v, const Uniforms& u) -> glm::vec4 {
-              return v.position;
-          }) {}
+    VertexShader();
     explicit VertexShader(ShaderFunc f) : m_func(f) {}
     glm::vec4 process(const Vertex&, const Uniforms&);
 };
+
+namespace BuiltinVertexShader {
+
+glm::vec4 mvp(const Vertex&, const Uniforms&);
+glm::vec4 test(const Vertex&, const Uniforms&);
+
+} // namespace BuiltinVertexShader
 
 #endif // SHADER_S_PRINCIPLE_SHADER_H

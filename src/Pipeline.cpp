@@ -19,17 +19,22 @@ float edgeFunction(const glm::vec2& a, const glm::vec2& b, const glm::vec2& p) {
 }
 
 void Pipeline::setVertexShader(const VertexShader& shader) { m_vertexShader = shader; }
+void Pipeline::setFragmentShader(const FragmentShader& shader) { m_fragmentShader = shader; }
 
 void Pipeline::drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1, const Vertex& v2,
                             const Uniforms& uni) {
     // 着色器
-    glm::vec4 _p0 = m_vertexShader.process(v0, uni);
-    glm::vec4 _p1 = m_vertexShader.process(v1, uni);
-    glm::vec4 _p2 = m_vertexShader.process(v2, uni);
+    VertexOutput out_0 = m_vertexShader.process(v0, uni);
+    VertexOutput out_1 = m_vertexShader.process(v1, uni);
+    VertexOutput out_2 = m_vertexShader.process(v2, uni);
     // 视窗变换
-    glm::vec2 p0 = viewportTransform(_p0, fb.getWidth(), fb.getHeight());
-    glm::vec2 p1 = viewportTransform(_p1, fb.getWidth(), fb.getHeight());
-    glm::vec2 p2 = viewportTransform(_p2, fb.getWidth(), fb.getHeight());
+    glm::vec2 p0 = viewportTransform(out_0.position, fb.getWidth(), fb.getHeight());
+    glm::vec2 p1 = viewportTransform(out_1.position, fb.getWidth(), fb.getHeight());
+    glm::vec2 p2 = viewportTransform(out_2.position, fb.getWidth(), fb.getHeight());
+
+    // 退化三角形检测
+    float area = edgeFunction(p0, p1, p2);
+    if (area == 0.0f) return;
 
     // 计算包围盒
     int minX = std::max(0, (int)std::floor(std::min({p0.x, p1.x, p2.x})));
@@ -47,7 +52,17 @@ void Pipeline::drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1,
             float e3 = edgeFunction(p2, p0, pixelCenter);
 
             if ((e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0)) {
-                fb.setPixel(x, y, {1, 1, 1});
+                float w0 = e2 / area;
+                float w1 = e3 / area;
+                float w2 = e1 / area;
+
+                Color inColor = {w0 * out_0.color.r() + w1 * out_1.color.r() + w2 * out_2.color.r(),
+                                 w0 * out_0.color.g() + w1 * out_1.color.g() + w2 * out_2.color.g(),
+                                 w0 * out_0.color.b() + w1 * out_1.color.b() + w2 * out_2.color.b(),
+                                 0.0f};
+
+                Color finalColor = m_fragmentShader.process(FragmentInput(inColor), uni);
+                fb.setPixel(x, y, finalColor);
             }
         }
     }

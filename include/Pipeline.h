@@ -11,9 +11,11 @@
 
 class Pipeline {
     VertexShader m_vertexShader;
+    FragmentShader m_fragmentShader;
 
   public:
     void setVertexShader(const VertexShader&);
+    void setFragmentShader(const FragmentShader&);
     void drawTriangle(Framebuffer&, const Vertex&, const Vertex&, const Vertex&, const Uniforms&);
 };
 

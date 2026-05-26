@@ -8,28 +8,51 @@
 #include <functional>
 #include <glm/glm.hpp>
 
+// ########### Uniforms ###########
+
 struct Uniforms {
     glm::mat4 model, view, projection;
 
     Uniforms();
 };
 
+// ########### Vertex-Shader ###########
+
 class VertexShader {
-    std::function<glm::vec4(const Vertex&, const Uniforms&)> m_func;
+    std::function<VertexOutput(const Vertex&, const Uniforms&)> m_func;
 
   public:
-    using ShaderFunc = std::function<glm::vec4(const Vertex&, const Uniforms&)>;
+    using ShaderFunc = std::function<VertexOutput(const Vertex&, const Uniforms&)>;
 
     VertexShader();
     explicit VertexShader(ShaderFunc f) : m_func(f) {}
-    glm::vec4 process(const Vertex&, const Uniforms&);
+    VertexOutput process(const Vertex&, const Uniforms&);
 };
 
 namespace BuiltinVertexShader {
 
-glm::vec4 mvp(const Vertex&, const Uniforms&);
-glm::vec4 test(const Vertex&, const Uniforms&);
+VertexOutput mvp(const Vertex&, const Uniforms&);
+VertexOutput test(const Vertex&, const Uniforms&);
 
 } // namespace BuiltinVertexShader
+
+// ########### Fragment-Shader ###########
+
+class FragmentShader {
+    std::function<Color(const FragmentInput&, const Uniforms&)> m_func;
+
+  public:
+    using ShaderFunc = std::function<Color(const FragmentInput&, const Uniforms&)>;
+
+    FragmentShader();
+    explicit FragmentShader(ShaderFunc f) : m_func(f) {}
+    Color process(const FragmentInput&, const Uniforms&);
+};
+
+namespace BuiltinFragmentShader{
+
+Color passThrough(const FragmentInput&, const Uniforms&);
+
+}
 
 #endif // SHADER_S_PRINCIPLE_SHADER_H

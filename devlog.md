@@ -46,6 +46,9 @@
 
 ## 阶段 1：搭骨架
 
+**日期**：2026-05-23（规划）  
+**状态**：[x] 已实现
+
 **目标**：CMake 编译通过，GLFW 窗口弹出来，能清屏为纯色。
 
 **为什么这是第一步**：
@@ -138,6 +141,9 @@ shader-s_principle/
 ---
 
 ## 阶段 2：画第一个三角形
+
+**日期**：2026-05-24（规划）  
+**状态**：[x] 已实现
 
 **目标**：在屏幕中央画一个白色的三角形。三个顶点坐标硬编码在 NDC 空间中，经视口变换后用手写光栅化算法写入 Framebuffer。
 
@@ -322,6 +328,9 @@ shader-s_principle/
 ---
 
 ## 阶段 3：引入顶点着色器
+
+**日期**：2026-05-25（规划）  
+**状态**：[x] 已实现
 
 **目标**：把顶点变换逻辑从 Pipeline 中抽离为可替换的着色器函数，引入 MVP 矩阵。三角形可以在屏幕上移动和旋转。
 
@@ -690,7 +699,7 @@ shader-s_principle/
 ## 阶段 4：引入片段着色器 + 重心坐标插值
 
 **日期**：2026-05-26（规划）  
-**状态**：[ ] 待实现
+**状态**：[x] 已实现
 
 **目标**：把像素颜色逻辑从 Pipeline 中抽离为可替换的片段着色器，引入重心坐标插值机制，实现彩色三角形。
 
@@ -955,4 +964,325 @@ shader-s_principle/
     ├── Pipeline.cpp      ← 修改（重心坐标 + 调片段着色器）
     ├── Shader.cpp        ← 修改（顶点着色器返回类型, +FragmentShader 实现）
     └── main.cpp          ← 修改（顶点带颜色, +fragShader）
+```
+
+---
+
+## 阶段 5：透视投影 + 装配器 + 深度缓冲
+
+**日期**：2026-05-26（规划）  
+**状态**：[ ] 待实现
+
+阶段 5 内容较多，拆为三个子阶段：
+
+| 子阶段 | 目标 | 屏幕结果 |
+|--------|------|----------|
+| 5a. 透视投影 + 透视除法 | 启用透视投影矩阵，在管线中做透视除法 | 三角形绕 Y 轴旋转时呈现近大远小的透视变形 |
+| 5b. 装配器（Input Assembler） | 新增 Mesh 类，支持一次提交多个三角形 | 屏幕上同时出现多个三角形 |
+| 5c. 深度缓冲（Depth Buffer） | 新增 DepthBuffer 模块，实现 z-test | 三角形之间有正确的遮挡关系（近处挡住远处） |
+
+> **为什么装配器在深度缓冲之前**：深度测试需要"多个三角形有前后关系"才看得到效果。装配器让 Pipeline 能一次处理多个三角形——这本身就是 GPU 输入装配阶段的职责。先有装配器提供"多个三角形"，再有深度缓冲处理"谁挡谁"，顺序自然。
+
+---
+
+### 子阶段 5a：透视投影 + 透视除法
+
+**目标**：用真正的透视投影矩阵替换单位矩阵，在管线中加入透视除法，让 z 分量首次参与渲染。三角形绕 Y 轴旋转时产生 3D 纵深感。
+
+**为什么这是第五步**：
+阶段 1-4 所有渲染都是在 2D 平面上进行的。顶点 z 坐标始终为 0，projection 和 view 矩阵都是单位矩阵，顶点着色器返回的 `gl_Position.w` 始终为 1。但真实 GPU 管线中，顶点着色器输出的是**裁剪空间**坐标（clip space），之后 GPU 会自动执行**透视除法**（perspective divide）——将 (x, y, z) 除以 w 得到 NDC 坐标。
+
+`w` 分量是理解 3D 渲染的关键。在透视投影下，`w` 等于顶点在相机空间中的 -z（深度），所以除以 w 实现了"近大远小"。这个除法的存在，解释了为什么 GPU 用 4D 齐次坐标而不是 3D 坐标——因为 4×4 矩阵乘法 + 透视除法可以用统一的方式处理旋转、平移、缩放和透视。
+
+阶段 5a 就是补上这个缺失的环节。
+
+#### 核心概念：透视除法（Perspective Divide）
+
+回顾 GPU 管线的坐标变换全过程：
+
+```
+模型空间 → [Model矩阵] → 世界空间 → [View矩阵] → 相机空间 → [Projection矩阵] → 裁剪空间 → [透视除法] → NDC → [视口变换] → 屏幕坐标
+                                                                           ↑
+                                                                     本阶段新增
+```
+
+在阶段 3-4 中，projection 是单位矩阵，w 始终为 1，透视除法除以 1 等于没做。
+
+本阶段把 projection 换成 `glm::perspective` 生成的透视投影矩阵。这个矩阵做的事情（简化版）：
+
+```
+裁剪空间坐标 = Projection × View × Model × local_pos
+
+透视投影矩阵的核心效果：
+  clip.x 正比于 view.x（缩放到 FOV）
+  clip.y 正比于 view.y（缩放到 FOV）
+  clip.z 编码 view.z（用于深度缓冲）
+  clip.w = -view.z   ← 关键！w 等于相机空间深度的取反
+```
+
+透视除法：`ndc = clip.xyz / clip.w` → x 和 y 被 view.z 除，实现了"距离越远坐标越小"的透视效果。
+
+#### 需要修改的文件
+
+| 文件 | 操作 | 核心改动 |
+|------|------|----------|
+| `src/Pipeline.cpp` | 修改 | 顶点着色器输出后、视口变换前，增加透视除法步骤 |
+| `src/main.cpp` | 修改 | 设置透视投影矩阵 + 视图矩阵；旋转轴从 Z 改为 Y |
+
+变更量很小——管线加 3 行除法，main 加几行矩阵设置。
+
+#### 各模块规格
+
+##### Pipeline.cpp 修改
+
+在顶点着色器处理之后、视口变换之前，插入透视除法：
+
+```cpp
+// 顶点着色器处理（不变）
+VertexOutput out0 = m_vertexShader.process(v0, uniforms);
+VertexOutput out1 = m_vertexShader.process(v1, uniforms);
+VertexOutput out2 = m_vertexShader.process(v2, uniforms);
+
+// 透视除法（新增）—— 裁剪空间 → NDC
+glm::vec3 ndc0(out0.position / out0.position.w);
+glm::vec3 ndc1(out1.position / out1.position.w);
+glm::vec3 ndc2(out2.position / out2.position.w);
+
+// 视口变换（改为使用 NDC 坐标）
+glm::vec2 p0 = viewportTransform(glm::vec4(ndc0, 1.0f), fb.getWidth(), fb.getHeight());
+glm::vec2 p1 = viewportTransform(glm::vec4(ndc1, 1.0f), fb.getWidth(), fb.getHeight());
+glm::vec2 p2 = viewportTransform(glm::vec4(ndc2, 1.0f), fb.getWidth(), fb.getHeight());
+```
+
+> 为什么用 `glm::vec3(out.position / out.position.w)` 写法：`glm::vec4 / float` 等价于每个分量除以该标量（SIMD 风格）。取前三维得到 NDC 的 (x, y, z)，z 留给阶段 5c 的深度缓冲用。
+
+> 为什么透视除法放在 Pipeline 而不是 VertexShader：在真实 GPU 中，透视除法是固定功能管线的一部分，在顶点着色器之后、光栅化之前自动执行。对着色器程序员来说是透明的——他们在顶点着色器里写 `gl_Position = MVP * vec4(pos, 1.0)`，不需要手动做除法。我们的 `VertexShader` 对应 GPU 的可编程顶点着色器，所以除法放在 Pipeline 里更准确。
+
+##### main.cpp 修改
+
+三个变化：（1）设置透视投影矩阵；（2）设置视图矩阵让相机后移；（3）旋转轴从 Z 改为 Y。
+
+```cpp
+// 在渲染循环之前设置投影和视图（它们在整个程序运行期间不变）
+uniforms.projection = glm::perspective(
+    glm::radians(60.0f),   // FOV: 60 度
+    800.0f / 600.0f,       // 宽高比
+    0.1f,                  // 近裁剪面
+    100.0f                 // 远裁剪面
+);
+uniforms.view = glm::lookAt(
+    glm::vec3(0.0f, 0.0f, 3.0f),   // 相机位置：z=3，在三角形前方
+    glm::vec3(0.0f, 0.0f, 0.0f),   // 看向原点（三角形所在位置）
+    glm::vec3(0.0f, 1.0f, 0.0f)    // 上方向：Y 轴
+);
+
+// 渲染循环中，旋转轴从 Z 改为 Y：
+uniforms.model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
+```
+
+**为什么旋转轴从 Z 改为 Y**：绕 Z 轴旋转时所有顶点 z 不变，透视投影看不出效果。绕 Y 轴旋转时，v0（x=-0.577）和 v1（x=0.577）的 z 会朝相反方向变化，三角形在 3D 中"翻转"，近处顶点变大、远处顶点变小——透视效果一目了然。
+
+**为什么 `lookAt` 把相机放在 z=3**：三角形质心在原点，顶点距原点最大约 0.666。相机在 z=3 处，三角形在相机前方约 3 个单位，配合 FOV=60°，三角形大约占屏幕 1/3，比例合适。
+
+#### 关键注意事项
+
+1. **`glm::perspective` 的 FOV 是垂直方向的**：FOV=60° 意味着屏幕上下边缘之间的夹角为 60°。水平 FOV 由宽高比决定。
+
+2. **OpenGL 相机空间是右手坐标系，相机看向 -Z**：`glm::lookAt(camPos, target, up)` 生成的视图矩阵会把世界坐标变换到相机空间，其中相机看向自己的 -Z 方向。`glm::perspective` 生成的投影矩阵假设近裁剪面映射到 NDC z=-1，远裁剪面映射到 NDC z=1。
+
+3. **透视除法后 w 分量不再需要**：`glm::vec3(out.position / out.position.w)` 得到 (x/w, y/w, z/w)，即 NDC 坐标。后续视口变换只需要 x 和 y，z 留给深度缓冲。
+
+4. **背面消隐不需要**：三角形绕 Y 轴旋转到"背面"时（法线指向相机后方），三角形在屏幕上的投影会翻转。由于我们的边函数接受两种绕序（CW 和 CCW 都算内部），三角形不会消失。如果三角形突然消失，检查是否所有顶点都在近裁剪面之外（NDC z < -1 或 z > 1）。
+
+5. **透视除法可能除以 0**：如果 `out.position.w == 0`，除法会得到 inf/nan。但在透视投影下，w = -view.z，而相机前方的物体 view.z < 0（看向 -Z），所以 w > 0。只有恰好位于相机平面上的顶点 w=0，在近裁剪面为 0.1 的设置下这不可能发生。
+
+6. **NDC z 范围是 [-1, 1]**：在 OpenGL 中，NDC 的 z 从 -1（近裁剪面）到 1（远裁剪面）。`glm::perspective` 默认使用 [-1, 1] 范围（OpenGL 约定）。阶段 5c 做深度测试时要和这个范围对应。
+
+#### 预期可见输出
+
+三角形绕 Y 轴旋转时呈现明显的**透视变形**：当三角形"侧对"相机时，一侧顶点变近（变大外扩）、一侧变远（变小内缩）。整个三角形的投影在旋转过程中不断变形——和阶段 4 绕 Z 轴旋转时形状不变的"纸片旋转"截然不同。
+
+#### 验证方法
+
+- **改 FOV**：把 60° 改成 30°，三角形明显变大（窄 FOV = 望远镜效果）；改成 120°，三角形变小（广角效果）
+- **改相机距离**：把 `lookAt` 的 z 从 3 改成 10，三角形变小（相机远了）
+- **恢复 Z 轴旋转**：旋转轴改回 `(0,0,1)`，三角形恢复"纸片旋转"——验证透视效果确实来自 Y 轴旋转带来的深度变化
+- **暂时去掉透视除法**：注释掉除法，直接拿 clip.xy 做视口变换，三角形会扭曲变形——理解除法的必要性
+
+---
+
+### 子阶段 5b：装配器 — Mesh 类
+
+**目标**：新增 `Mesh` 类，让 Pipeline 能一次处理多个三角形，而非每次只画一个。
+
+**为什么需要装配器**：
+阶段 2-4 中，`Pipeline::drawTriangle()` 每次只接受三个独立的 `Vertex` 参数。如果想画两个三角形，必须调用两次 `drawTriangle`——这不是 GPU 的工作方式。真实 GPU 的**输入装配器（Input Assembler, IA）**从顶点缓冲区和索引缓冲区读取数据，组装成图元（三角形、线段等），然后送入管线。
+
+装配器的作用是把"一堆顶点数据"组织成"一组三角形"，让 Pipeline 对每个三角形依次执行渲染。这样做的好处：
+1. **数据集中管理**：三角形的顶点都存在 Mesh 里，不需要在 main.cpp 里散落一堆 `Vertex` 变量
+2. **为深度缓冲铺垫**：阶段 5c 需要多个三角形来演示遮挡，装配器提供多三角形的提交能力
+3. **向真实 GPU 靠拢**：`Mesh` 对应"顶点缓冲区 + 索引缓冲区"的 CPU 侧抽象
+
+#### 设计决策：简单存储 vs 索引几何
+
+| 方案 | 描述 | 优点 | 缺点 |
+|------|------|------|------|
+| A. 直接存三角形 | `std::vector<Vertex>`，每 3 个一组 | 实现简单，无间接访问 | 共享顶点需重复存储 |
+| B. 顶点+索引 | `vector<Vertex>` + `vector<uvec3>` 索引三元组 | 顶点可复用，接近真实 GPU | 多一层间接，实现稍复杂 |
+
+**选择方案 A**。理由：（1）当前三角形数量少，顶点重复存储开销可忽略；（2）索引几何会让"顶点着色器对同一顶点执行多次"这个行为变得隐晦——对于教学来说，显式地为每个三角形提供三个独立顶点反而更清晰；（3）方案 A 和当前 `drawTriangle(Vertex, Vertex, Vertex)` 的接口自然兼容。
+
+（阶段 6 引入复杂网格时，可以再考虑索引方案。）
+
+#### 需要修改/创建的文件
+
+| 文件 | 操作 | 核心改动 |
+|------|------|----------|
+| `include/Mesh.h` | **新建** | Mesh 类声明 |
+| `src/Mesh.cpp` | **新建** | Mesh 类实现 |
+| `include/Pipeline.h` | 修改 | 新增 `drawMesh()` 方法声明 |
+| `src/Pipeline.cpp` | 修改 | 实现 `drawMesh()`：遍历 Mesh 中的三角形，调用现有的三角形渲染逻辑 |
+| `src/main.cpp` | 修改 | 用 Mesh 管理多个三角形 |
+| `src/CMakeLists.txt` | 修改 | 新增 `Mesh.cpp` 编译 |
+
+#### 各模块规格
+
+##### Mesh 类（新建）
+
+Mesh 是三角形的容器。它的职责很简单：存储顶点，提供遍历接口。
+
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `m_vertices` | `std::vector<Vertex>` | 按顺序存储所有三角形的顶点。三角形 0 = 顶点 [0,1,2]，三角形 1 = [3,4,5]，依此类推 |
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| 默认构造 | `Mesh()` | 空网格 |
+| `addTriangle` | `void addTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2)` | 追加一个三角形（push_back 三个顶点） |
+| `triangleCount` | `size_t triangleCount() const` | 返回三角形数量 = `m_vertices.size() / 3` |
+| `getVertex` | `const Vertex& getVertex(size_t i) const` | 返回第 i 个顶点（只读访问） |
+| `clear` | `void clear()` | 清空所有顶点 |
+
+```cpp
+class Mesh {
+    std::vector<Vertex> m_vertices;
+  public:
+    Mesh() = default;
+    void addTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2);
+    size_t triangleCount() const { return m_vertices.size() / 3; }
+    const Vertex& getVertex(size_t i) const { return m_vertices[i]; }
+    void clear() { m_vertices.clear(); }
+};
+```
+
+> 为什么 Mesh 只管存储、不管渲染：Mesh 是纯数据容器（和 Framebuffer 类似）。它不知道 MVP 矩阵、不知道着色器、不知道光栅化。把数据（Mesh）和逻辑（Pipeline）分开，是[`plan.md`](plan.md)中"数据的归数据，逻辑的归逻辑"原则的体现。改渲染算法只改 Pipeline，改模型数据只改 Mesh——互不干扰。
+
+> 为什么 `getVertex` 返回 const 引用：Mesh 是"上传到 GPU"的顶点数据，在渲染过程中不应被修改。const 引用避免了拷贝，同时防止 Pipeline 意外修改顶点数据。
+
+##### Pipeline 修改
+
+新增 `drawMesh` 方法，它对 Mesh 中的每个三角形调用已有的三角形渲染逻辑：
+
+```cpp
+void Pipeline::drawMesh(Framebuffer& fb, const Mesh& mesh, const Uniforms& uni) {
+    for (size_t t = 0; t < mesh.triangleCount(); ++t) {
+        size_t i = t * 3;
+        drawTriangle(fb, mesh.getVertex(i), mesh.getVertex(i + 1), mesh.getVertex(i + 2), uni);
+    }
+}
+```
+
+`drawTriangle` 的实现完全不需要改动——它仍然接收三个顶点、执行顶点着色器 → 透视除法 → 视口变换 → 光栅化 → 片段着色器。`drawMesh` 只是一个薄层循环。
+
+> 为什么不把 `drawTriangle` 改成 private 只保留 `drawMesh`：保留 `drawTriangle` 作为 public，初学时可以只画一个三角形做实验（快速原型）；熟悉后切换到 `drawMesh` 管理多个三角形。两个接口在不同学习阶段各有用处。
+
+##### main.cpp 修改
+
+用 Mesh 定义多个三角形：
+
+```cpp
+// 构建网格
+Mesh mesh;
+
+// 三角形 1：原来的 RGB 三角形（z=0，模型空间原点附近）
+mesh.addTriangle(
+    Vertex(glm::vec4(-0.577f, -0.333f, 0.0f, 1.0f), Color(1, 0, 0)),
+    Vertex(glm::vec4( 0.577f, -0.333f, 0.0f, 1.0f), Color(0, 1, 0)),
+    Vertex(glm::vec4( 0.0f,  0.666f, 0.0f, 1.0f), Color(0, 0, 1))
+);
+
+// 三角形 2：偏移到右上方，纯黄色
+mesh.addTriangle(
+    Vertex(glm::vec4(-0.2f, 0.2f, 0.0f, 1.0f), Color(1, 1, 0)),
+    Vertex(glm::vec4( 0.5f, 0.2f, 0.0f, 1.0f), Color(1, 1, 0)),
+    Vertex(glm::vec4( 0.15f, 0.7f, 0.0f, 1.0f), Color(1, 1, 0))
+);
+
+// 渲染循环中，把 drawTriangle 替换为 drawMesh：
+pipeline.drawMesh(fb, mesh, uniforms);
+```
+
+> 三角形 2 用纯黄色、统一颜色（三个顶点颜色相同），这演示了：当所有顶点颜色相同时，插值结果也是相同颜色——即"uniform 颜色"的效果。
+
+#### 关键注意事项
+
+1. **`drawMesh` 只是循环，不引入新的渲染逻辑**：这意味着两个三角形之间是完全独立的——后画的三角形会覆盖先画的三角形（画家算法）。这正是阶段 5c 引入深度缓冲的动机——"如果黄色三角形在红色三角形后面，它不该被画到前面"。
+
+2. **同一个 Mesh 可以包含任意数量的三角形**：三角形数量 = `m_vertices.size() / 3`。如果顶点数不是 3 的倍数，最后一个"三角形"会被忽略（因为 `triangleCount()` 整数除法下取整）。
+
+3. **每帧所有三角形使用相同的 MVP 矩阵和着色器**：这意味着旋转时所有三角形一起转。如果想让不同三角形有独立的位置/旋转，目前的做法是每帧重建 Mesh（或等将来引入 per-draw 的 model 矩阵）。
+
+#### 预期可见输出
+
+屏幕上同时出现两个三角形：一个 RGB 渐变色三角形在中心，一个纯黄色三角形在右上方。两者一起绕 Y 轴旋转，具有相同的透视变形。黄色三角形因为后画，如果和 RGB 三角形有重叠区域，黄色会覆盖 RGB（画家算法，阶段 5c 会修正这个问题）。
+
+#### 验证方法
+
+- **加更多三角形**：在 Mesh 里加第三个三角形（比如左下角的青色三角形），观察它们是否都显示
+- **改变三角形添加顺序**：把三角形 2 的 `addTriangle` 调到最后，观察覆盖顺序是否改变
+- **单三角形退化测试**：Mesh 只加一个三角形，行为应和之前的 `drawTriangle` 完全一致
+
+---
+
+### 子阶段 5c：深度缓冲（Depth Buffer）
+
+**目标**：新增 DepthBuffer 模块，在光栅化时做深度测试（z-test）。让离相机更近的像素正确遮挡更远的像素，而非简单的"后画覆盖先画"。
+
+**为什么在装配器之后**：装配器提供了"多个三角形"，深度缓冲让它们之间的遮挡关系变得正确。在 5b 中，黄色三角形如果"在 3D 空间中处于 RGB 三角形的后面"，它仍然会被画到前面（画家算法）。5c 修正了这个问题——通过存储和比较每个像素的深度值，确保近处遮挡远处。
+
+（详细规划将在 5b 完成后编写，此处仅列出概要）
+
+**预计涉及**：
+- 新建 `include/DepthBuffer.h` + `src/DepthBuffer.cpp`
+- Pipeline::drawTriangle 增加 z 插值 + 深度测试
+- Mesh 中的三角形使用不同的 z 坐标来演示遮挡
+- 可能需要透视校正插值（屏幕空间的线性插值在透视投影下不正确）
+
+---
+
+### 阶段 5 完成后的文件结构
+
+```
+shader-s_principle/
+├── CMakeLists.txt
+├── devlog.md
+├── plan.md
+├── remind.md
+├── include/
+│   ├── Types.h
+│   ├── Framebuffer.h
+│   ├── Screen.h
+│   ├── Pipeline.h
+│   ├── Shader.h
+│   ├── Mesh.h                ← 阶段 5b 新建
+│   └── DepthBuffer.h         ← 阶段 5c 新建
+└── src/
+    ├── CMakeLists.txt
+    ├── Framebuffer.cpp
+    ├── Screen.cpp
+    ├── Pipeline.cpp           ← 5a: +透视除法; 5b: +drawMesh; 5c: +深度测试
+    ├── Shader.cpp
+    ├── Mesh.cpp               ← 阶段 5b 新建
+    ├── DepthBuffer.cpp        ← 阶段 5c 新建
+    └── main.cpp               ← 各阶段持续修改
 ```

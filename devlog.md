@@ -684,3 +684,275 @@ shader-s_principle/
     ├── Shader.cpp             ← 新建
     └── main.cpp
 ```
+
+---
+
+## 阶段 4：引入片段着色器 + 重心坐标插值
+
+**日期**：2026-05-26（规划）  
+**状态**：[ ] 待实现
+
+**目标**：把像素颜色逻辑从 Pipeline 中抽离为可替换的片段着色器，引入重心坐标插值机制，实现彩色三角形。
+
+**为什么这是第四步**：
+阶段 3 的三角形虽然在旋转，但始终是纯白色。真实 GPU 在光栅化时会做一件非常重要的事——**插值（interpolation）**。顶点着色器输出的逐顶点数据（颜色、法线、UV），在三角形内部的每个像素位置会被加权平均。这个加权平均用的就是重心坐标（barycentric coordinates）。阶段 4 让学习者理解两个概念：（1）片段着色器是逐像素的可替换逻辑，和顶点着色器对称；（2）重心坐标插值是连接顶点着色器和片段着色器的"胶水"。
+
+### 本阶段的数据流
+
+```
+[Vertex(+color)] → [VertexShader] → [VertexOutput(pos+color)] → [viewportTransform] → [screen pos + edge functions] → [barycentric interpolation] → [FragmentInput] → [FragmentShader] → [Color] → [Framebuffer::setPixel]
+```
+
+对比阶段 3，增加了三个新环节：
+- `VertexOutput`：顶点着色器现在输出一个结构体而不仅是 vec4 位置
+- **重心坐标插值**：三个顶点的颜色在像素位置按权重混合
+- `FragmentShader`：接收插值后的 `FragmentInput`，输出最终颜色
+
+### 核心概念：重心坐标插值
+
+三个边函数值 `e1, e2, e3` 已经隐含了重心坐标。对于三角形内部的一个像素 P：
+
+```
+area = e1 + e2 + e3                // 三角形总面积的 2 倍
+w0 = e2 / area                     // 顶点 v0 的权重（对边是 p1→p2，对应 e2）
+w1 = e3 / area                     // 顶点 v1 的权重（对边是 p2→p0，对应 e3）
+w2 = e1 / area                     // 顶点 v2 的权重（对边是 p0→p1，对应 e1）
+```
+
+三个权重满足 `w0 + w1 + w2 = 1`，且都在 [0, 1] 范围内（当 P 在三角形内部时）。
+
+任意逐顶点属性 X 的插值：`X_interpolated = w0 * X0 + w1 * X1 + w2 * X2`
+
+**为什么边函数值直接就是重心坐标？** 因为边函数 `edgeFunction(A, B, P)` 计算的是三角形 ABP 的面积（的 2 倍）。对于三角形 ABC 内部的点 P，P 把大三角形分成三个子三角形：PBC、APC、ABP。这三个子三角形的面积之比，就是 P 到三个顶点的"权重"。而 `e1 = area(P, p1, p2)` 正是子三角形 P-p1-p2 的面积——因此 `e1` 正比于对面顶点 p0 的权重 w0……等一下，对照关系是：`e1 = edgeFunction(p0, p1, P)` → 这是以 p1-p0 为底边的子三角形面积，对应顶点 p2。所以 w2 = e1/area, w0 = e2/area, w1 = e3/area。
+
+**为什么不需要透视校正插值（perspective-correct interpolation）？** 因为阶段 4 的三角形仍是纯 2D 的（所有顶点 z=0，projection 矩阵是单位矩阵），没有透视投影带来的深度差异。在正交投影或纯 2D 场景中，屏幕空间的线性插值就是正确的。阶段 5 引入真正的透视投影后，才需要透视校正。
+
+### 需要修改/创建的文件
+
+| 文件 | 操作 | 职责 |
+|------|------|------|
+| `include/Types.h` | 修改 | Vertex 新增 `color` 属性；新增 `VertexOutput`、`FragmentInput` 结构体 |
+| `include/Shader.h` | 修改 | `VertexShader` 返回类型从 `glm::vec4` 改为 `VertexOutput`；新增 `FragmentShader` 类；新增 `BuiltinFragmentShader` 命名空间 |
+| `src/Shader.cpp` | 修改 | 所有顶点着色器函数返回 `VertexOutput`；实现 `FragmentShader` 默认构造 + `passThrough` |
+| `include/Pipeline.h` | 修改 | 新增 `FragmentShader m_fragmentShader` 成员 + `setFragmentShader()` |
+| `src/Pipeline.cpp` | 修改 | `drawTriangle` 中保存 `VertexOutput`；计算重心坐标；插值颜色；调用片段着色器写入结果 |
+| `src/main.cpp` | 修改 | 顶点构造携带颜色；创建并绑定 `FragmentShader` |
+
+无新建文件——所有改动都在现有模块内。
+
+### 各模块规格
+
+#### Types.h 修改
+
+**Vertex 结构体新增 `color` 字段**：
+
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `position` | `glm::vec4` | 模型空间位置（已有，不变） |
+| `color` | `Color` | **新增**，逐顶点颜色属性，默认值白色 (1,1,1) |
+
+新增构造器 `Vertex(const glm::vec4& pos, Color c)`，允许在构造时直接指定颜色。默认颜色为白色，保证现有不传颜色的代码行为不变。
+
+**VertexOutput 结构体（新增）**：
+
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `position` | `glm::vec4` | 裁剪空间位置（等价于 GLSL 的 `gl_Position`） |
+| `color` | `Color` | 逐顶点颜色（将由光栅化器插值） |
+
+> 为什么需要 VertexOutput：阶段 3 的顶点着色器只返回 vec4 位置，因为那时没有"需要在三角形表面变化的数据"。从阶段 4 开始，顶点着色器需要同时输出位置和颜色（将来还有 UV 坐标等），VertexOutput 是这些输出的容器。它对应 GLSL 中顶点着色器的所有 `out` 变量 + `gl_Position` 的集合。
+
+**FragmentInput 结构体（新增）**：
+
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `color` | `Color` | 重心坐标插值后的颜色 |
+
+> 为什么需要 FragmentInput：它是片段着色器的输入参数。和 VertexOutput 分开的原因是——VertexOutput 含 position（片段着色器不需要），且 VertexOutput 是"逐顶点"的、FragmentInput 是"插值后"的。语义不同，分开命名避免混淆。在真实 GLSL 中，这就是顶点着色器的 `out` 变量对应片段着色器的 `in` 变量——类型相同但值已经是插值后的。
+
+#### Shader.h 修改
+
+**VertexShader 变更**：
+- 返回类型从 `glm::vec4` 改为 `VertexOutput`
+- `ShaderFunc` 类型别名对应更新：`std::function<VertexOutput(const Vertex&, const Uniforms&)>`
+- `process()` 返回 `VertexOutput` 而非 `glm::vec4`
+
+**FragmentShader 类（新增）**：
+
+| 成员 | 类型/签名 | 说明 |
+|------|-----------|------|
+| `m_func` | `std::function<Color(const FragmentInput&, const Uniforms&)>` | 存储片段着色器函数 |
+| `ShaderFunc` (public) | `std::function<Color(const FragmentInput&, const Uniforms&)>` | 类型别名，方便调用方书写 |
+| 默认构造函数 | `FragmentShader()` | 返回插值颜色的直通着色器 |
+| 带参构造函数 | `explicit FragmentShader(ShaderFunc f)` | 用自定义函数初始化 |
+| `process` | `Color process(const FragmentInput&, const Uniforms&) const` | 调用着色器函数 |
+
+> 为什么 FragmentShader 也要接收 Uniforms：真实 GLSL 中 fragment shader 可以读取 uniform 变量（比如光照参数、时间等）。传入 Uniforms 让片段着色器也能访问全局状态——学习者可以在片段着色器中用时间做动态颜色效果（如呼吸灯、色彩循环等）。
+
+**BuiltinFragmentShader 命名空间（新增）**：
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `passThrough` | `Color passThrough(const FragmentInput& in, const Uniforms& u)` | 原样返回插值后的颜色。这是最基础的片段着色器——"顶点给我什么颜色，我就显示什么颜色" |
+
+#### Shader.cpp 修改
+
+**所有顶点着色器函数需要更新返回类型**：
+
+- 默认构造：`[](const Vertex& v, const Uniforms&) -> VertexOutput { return {v.position, v.color}; }`
+- `BuiltinVertexShader::mvp`：返回 `VertexOutput{u.projection * u.view * u.model * v.position, v.color}` —— MVP 变换位置，原样传递顶点颜色
+- `BuiltinVertexShader::test`：位置偏移后，颜色原样传递
+
+**FragmentShader 默认构造函数**：
+```cpp
+FragmentShader::FragmentShader()
+    : m_func([](const FragmentInput& in, const Uniforms&) { return in.color; }) {}
+```
+
+**FragmentShader::process**：
+```cpp
+Color FragmentShader::process(const FragmentInput& in, const Uniforms& u) const {
+    return m_func(in, u);
+}
+```
+
+**BuiltinFragmentShader::passThrough**：
+```cpp
+Color BuiltinFragmentShader::passThrough(const FragmentInput& in, const Uniforms& u) {
+    return in.color;
+}
+```
+
+`passThrough` 接受 `const Uniforms&` 但不使用——保留参数是为了和 `ShaderFunc` 签名匹配。如果学习者想在 passThrough 中加入时间效果，只需修改函数体即可。
+
+#### Pipeline.h 修改
+
+**新增成员**：
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `m_fragmentShader` | `FragmentShader` | 当前绑定的片段着色器 |
+
+**新增方法**：
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `setFragmentShader` | `void setFragmentShader(const FragmentShader&)` | 设置片段着色器 |
+
+`drawTriangle` 签名不变。
+
+#### Pipeline.cpp 修改
+
+`drawTriangle` 的核心改动在顶点着色器处理和像素写入两个环节。
+
+**步骤 1（顶点着色器处理）变更**——保存完整的 VertexOutput：
+```cpp
+VertexOutput out0 = m_vertexShader.process(v0, uniforms);
+VertexOutput out1 = m_vertexShader.process(v1, uniforms);
+VertexOutput out2 = m_vertexShader.process(v2, uniforms);
+
+glm::vec2 p0 = viewportTransform(out0.position, fb.getWidth(), fb.getHeight());
+glm::vec2 p1 = viewportTransform(out1.position, fb.getWidth(), fb.getHeight());
+glm::vec2 p2 = viewportTransform(out2.position, fb.getWidth(), fb.getHeight());
+```
+
+**新增退化三角形检测**（在包围盒计算之前）：
+```cpp
+float area = edgeFunction(p0, p1, p2);
+if (area == 0.0f) return;  // 三点共线，退化三角形
+```
+
+**步骤 6（像素写入）变更**——用重心坐标插值 + 片段着色器替代硬编码颜色：
+```cpp
+// 计算重心坐标
+float w0 = e2 / area;  // 顶点 0 的权重
+float w1 = e3 / area;  // 顶点 1 的权重
+float w2 = e1 / area;  // 顶点 2 的权重
+
+// 插值逐顶点颜色
+Color interpColor(
+    w0 * out0.color.r + w1 * out1.color.r + w2 * out2.color.r,
+    w0 * out0.color.g + w1 * out1.color.g + w2 * out2.color.g,
+    w0 * out0.color.b + w1 * out1.color.b + w2 * out2.color.b
+);
+
+// 调用片段着色器
+Color finalColor = m_fragmentShader.process(FragmentInput(interpColor), uniforms);
+
+fb.setPixel(x, y, finalColor);
+```
+
+**关键细节**：
+- 重心坐标权重的对应关系：`e1 = edgeFunction(p0, p1, P)` → w2（顶点 p2 的对边是 p0→p1，所以 e1 对应 p2 的权重）；e2 → w0；e3 → w1
+- `area` 仅需计算一次（三角形总面积不变），三个边函数 `e1, e2, e3` 在每个像素不同
+- `FragmentInput` 在调用点直接构造
+- 片段着色器可能会修改颜色，Pipeline 不假设它会原样返回——这正是可替换性的核心
+
+#### main.cpp 修改
+
+**顶点定义增加颜色**：
+```cpp
+Vertex v0(glm::vec4(-0.577f, -0.333f, 0.0f, 1.0f), Color(1, 0, 0)); // 左下 红色
+Vertex v1(glm::vec4( 0.577f, -0.333f, 0.0f, 1.0f), Color(0, 1, 0)); // 右下 绿色
+Vertex v2(glm::vec4( 0.0f,  0.666f, 0.0f, 1.0f), Color(0, 0, 1));   // 上方 蓝色
+```
+
+**创建并绑定片段着色器**（在渲染循环之前）：
+```cpp
+FragmentShader fragShader(BuiltinFragmentShader::passThrough);
+pipeline.setFragmentShader(fragShader);
+```
+
+主循环不变——三角形继续旋转，但现在以渐变彩色呈现。
+
+### 关键注意事项
+
+1. **重心坐标的权重对应关系容易搞混**：边函数 `e1 = edgeFunction(p0, p1, P)` 对应的是子三角形 P-p0-p1 的面积，该面积正比于 P 到对面顶点 p2 的距离，所以 e1 对应 w2。完整映射：w0 = e2/area, w1 = e3/area, w2 = e1/area。验证方式——如果像素恰好落在 p0 上，P → p0，e1 ≈ 0（P 在边 p0→p1 上），e3 ≈ 0（P 在边 p2→p0 上），只有 e2 ≠ 0（P 不在边 p1→p2 上）。此时 w0=e2/area ≈ 1，w1≈0，w2≈0，权重全部正确落在 p0 上。
+
+2. **退化三角形的 area 可能为负**：如果顶点按顺时针排列，`edgeFunction(p0, p1, p2)` 返回负值。像素内部测试用 `||` 同时接受正负绕序。归一化时 `e/area` 中 e 和 area 同号，结果始终为正。唯一需要注意的是 `area == 0` 判断——三点共线时所有边函数值都为 0（或接近 0），用 `fabs(area) < 1e-8` 判断更安全。
+
+3. **顶点着色器返回的 VertexOutput.color 是"逐顶点"的**：如果顶点着色器不传 `v.color` 而是返回一个固定颜色（如红色），三个顶点输出相同的红色，插值后还是红色，整个三角形会是纯色。这不是 bug——这就是"uniform 颜色"的效果。
+
+4. **Color 的线性插值是在 RGB 空间进行的**：RGB 不是感知均匀的色彩空间，所以渐变看起来不一定"均匀"。这是正确的物理行为——GPU 也是在 RGB 空间做线性插值。
+
+5. **片段着色器在插值之后运行**：顶点颜色先被插值，片段着色器接收到的是一个"已经平滑好"的颜色值。这对应 Gouraud 着色（逐顶点光照 + 插值颜色）。Phong 着色（逐像素光照）需要在片段着色器中拿到插值后的法线向量，然后在片段着色器内部做光照计算——阶段 5 可扩展至此。
+
+### 预期可见输出
+
+运行后将看到一个**旋转的彩色三角形**：三个顶点分别为红、绿、蓝色，三角形内部是平滑的颜色渐变。这是重心坐标插值最直观的展示。
+
+### 阶段 4 可选的验证方法
+
+- **改顶点颜色**：把 v2 的颜色从蓝色改为黄色 `Color(1, 1, 0)`，三角形渐变色应相应变化
+- **纯色三角形**：把片段着色器改为 `[](const FragmentInput&, const Uniforms&) { return Color(1, 0, 0); }`，三角形应变为纯红色——验证片段着色器完全控制了颜色
+- **亮度减半**：
+  ```cpp
+  FragmentShader halfBright([](const FragmentInput& in, const Uniforms&) {
+      return Color(in.color.r * 0.5f, in.color.g * 0.5f, in.color.b * 0.5f);
+  });
+  ```
+  三角形整体变暗但渐变仍在——验证片段着色器在插值之后还能再加工颜色
+- **故意调换权重**：把 `w0, w1, w2` 的计算搞乱（如 w0=e1/area, w1=e2/area, w2=e3/area），渐变方向会错位——验证重心坐标对应关系的正确性
+- **逐顶点颜色 vs 固定颜色**：把顶点着色器改为返回固定颜色 `Color(1,0.5,0)`（而非传递 `v.color`），三个顶点输出相同颜色，三角形变为纯橙色——理解"varying 为常量"和"varying 随顶点变化"的区别
+
+### 本阶段完成后的文件结构
+
+（无新增文件）
+
+```
+shader-s_principle/
+├── CMakeLists.txt
+├── devlog.md
+├── plan.md
+├── include/
+│   ├── Types.h          ← 修改（Vertex +color, +VertexOutput, +FragmentInput）
+│   ├── Framebuffer.h
+│   ├── Screen.h
+│   ├── Pipeline.h       ← 修改（+m_fragmentShader, +setFragmentShader）
+│   └── Shader.h         ← 修改（VertexShader 返回类型变更, +FragmentShader, +BuiltinFragmentShader）
+└── src/
+    ├── CMakeLists.txt
+    ├── Framebuffer.cpp
+    ├── Screen.cpp
+    ├── Pipeline.cpp      ← 修改（重心坐标 + 调片段着色器）
+    ├── Shader.cpp        ← 修改（顶点着色器返回类型, +FragmentShader 实现）
+    └── main.cpp          ← 修改（顶点带颜色, +fragShader）
+```

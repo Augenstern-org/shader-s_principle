@@ -24,33 +24,35 @@ A CPU software rasterizer that simulates the GPU rendering pipeline. GLFW + Open
 **Dependency graph** (bottom-up, no cycles):
 
 ```
-Types.h  (Color, Vertex)
+Types.h  (Color, Vertex, VertexOutput, FragmentInput)
    ↑
-Framebuffer (pixel buffer)   Shader.h (vertex shader interface + Uniforms)
-   ↑                            ↑
-Screen (GLFW window + GL texture)   Pipeline (vertex shader → viewport → rasterization)
-   ↑                            ↑
+Framebuffer   Shader.h (vertex + fragment shaders + Uniforms)   Mesh.h (triangle container)   DepthBuffer.h (depth storage + test)
+   ↑              ↑                                              ↑                              ↑
+Screen         Pipeline (vertex shader → perspective divide → viewport → rasterization → depth test → fragment shader)
+   ↑              ↑
    main.cpp  (wires everything, owns the game loop)
 ```
 
 **Data flow through the pipeline:**
 
 ```
-[Model-space vertices] → [VertexShader (MVP)] → [NDC coords] → [viewportTransform] → [screen coords] → [edge function rasterizer] → [Framebuffer::setPixel]
+[Model-space vertices] → [VertexShader (MVP)] → [clip coords] → [perspective divide] → [NDC coords] → [viewportTransform] → [screen coords] → [edge function rasterizer] → [barycentric + perspective-correct interp] → [depth test] → [FragmentShader] → [Framebuffer::setPixel]
 ```
 
 ## Current state
 
-**Stage 3 complete** — rotating triangle via MVP matrix. Stages 4 (fragment shader) and 5 (textures, depth test) are planned but not started.
+**Stage 5 complete** — all five stages implemented. Depth buffer with perspective-correct interpolation is working.
 
 | Module | File(s) | Role |
 |--------|---------|------|
-| `Types.h` | `include/Types.h` | `Color` (r,g,b floats), `Vertex` (vec4 position). Depends only on GLM. |
+| `Types.h` | `include/Types.h` | `Color` (vec4-based with accessors), `Vertex` (pos + color), `VertexOutput`, `FragmentInput`. Depends only on GLM. |
 | `Framebuffer` | `include/Framebuffer.h`, `src/Framebuffer.cpp` | CPU pixel buffer. `clear()`, `setPixel()`, `getPixels()`. |
 | `Screen` | `include/Screen.h`, `src/Screen.cpp` | GLFW window + OpenGL texture upload for display. |
-| `Pipeline` | `include/Pipeline.h`, `src/Pipeline.cpp` | Assembles vertex shader → viewport transform → edge-function rasterizer. Stores a `VertexShader`. |
-| `Shader` | `include/Shader.h`, `src/Shader.cpp` | `VertexShader` (wraps `std::function`), `Uniforms` (model/view/projection matrices), `BuiltinVertexShader::mvp`. |
-| `main` | `src/main.cpp` | Hardcoded vertices, rotating model matrix via `glfwGetTime()`, main loop. |
+| `Pipeline` | `include/Pipeline.h`, `src/Pipeline.cpp` | Vertex shader → perspective divide → viewport → edge-function rasterizer (barycentric + perspective-correct interp) → depth test → fragment shader. `drawTriangle()` + `drawMesh()`. |
+| `Shader` | `include/Shader.h`, `src/Shader.cpp` | `VertexShader` (returns `VertexOutput`), `FragmentShader` (returns `Color`), `Uniforms` (model/view/projection), builtin shaders. |
+| `Mesh` | `include/Mesh.h`, `src/Mesh.cpp` | Triangle container. `addTriangle()`, `triangleCount()`, `getVertex()`. |
+| `DepthBuffer` | `include/DepthBuffer.h`, `src/DepthBuffer.cpp` | Per-pixel depth storage [0,1]. `clear()`, `testAndSet()` (LESS test). |
+| `main` | `src/main.cpp` | Creates mesh with 2 triangles at different z-depths, perspective projection, depth buffer, rotating model matrix, main loop. |
 
 ## Key conventions
 

@@ -9,16 +9,19 @@
 #include "Mesh.h"
 #include "Shader.h"
 #include "Types.h"
+#include "DepthBuffer.h"
 
 class Pipeline {
     VertexShader m_vertexShader;
     FragmentShader m_fragmentShader;
+    DepthBuffer* m_depthBuffer;
 
-  public:
+public:
     void setVertexShader(const VertexShader&);
     void setFragmentShader(const FragmentShader&);
     void drawTriangle(Framebuffer&, const Vertex&, const Vertex&, const Vertex&, const Uniforms&);
     void drawMesh(Framebuffer&, const Mesh&, const Uniforms&);
+    void setDepthBuffer(DepthBuffer* db);
 };
 
 #endif // SHADER_S_PRINCIPLE_PIPELINE_H

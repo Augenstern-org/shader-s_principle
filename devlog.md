@@ -971,15 +971,15 @@ shader-s_principle/
 ## 阶段 5：透视投影 + 装配器 + 深度缓冲
 
 **日期**：2026-05-26（规划）  
-**状态**：[ ] 待实现
+**状态**：[x] 已实现
 
 阶段 5 内容较多，拆为三个子阶段：
 
-| 子阶段 | 目标 | 屏幕结果 |
-|--------|------|----------|
-| 5a. 透视投影 + 透视除法 | 启用透视投影矩阵，在管线中做透视除法 | 三角形绕 Y 轴旋转时呈现近大远小的透视变形 |
-| 5b. 装配器（Input Assembler） | 新增 Mesh 类，支持一次提交多个三角形 | 屏幕上同时出现多个三角形 |
-| 5c. 深度缓冲（Depth Buffer） | 新增 DepthBuffer 模块，实现 z-test | 三角形之间有正确的遮挡关系（近处挡住远处） |
+| 子阶段 | 目标 | 屏幕结果 | 状态 |
+|--------|------|----------|------|
+| 5a. 透视投影 + 透视除法 | 启用透视投影矩阵，在管线中做透视除法 | 三角形绕 Y 轴旋转时呈现近大远小的透视变形 | [x] 已实现 |
+| 5b. 装配器（Input Assembler） | 新增 Mesh 类，支持一次提交多个三角形 | 屏幕上同时出现多个三角形 | [x] 已实现 |
+| 5c. 深度缓冲（Depth Buffer） | 新增 DepthBuffer 模块，实现 z-test | 三角形之间有正确的遮挡关系（近处挡住远处） | [x] 已实现 | |
 
 > **为什么装配器在深度缓冲之前**：深度测试需要"多个三角形有前后关系"才看得到效果。装配器让 Pipeline 能一次处理多个三角形——这本身就是 GPU 输入装配阶段的职责。先有装配器提供"多个三角形"，再有深度缓冲处理"谁挡谁"，顺序自然。
 
@@ -1244,19 +1244,313 @@ pipeline.drawMesh(fb, mesh, uniforms);
 
 ---
 
-### 子阶段 5c：深度缓冲（Depth Buffer）
+### 子阶段 5c：深度缓冲 + 透视校正插值
 
-**目标**：新增 DepthBuffer 模块，在光栅化时做深度测试（z-test）。让离相机更近的像素正确遮挡更远的像素，而非简单的"后画覆盖先画"。
+**日期**：2026-05-26（规划）  
+**状态**：[x] 已实现
+
+**目标**：新增 DepthBuffer 模块，在光栅化时做深度测试（z-test），同时修复阶段 4 遗留的问题——引入透视校正插值，让逐顶点属性在透视投影下也能正确插值。
 
 **为什么在装配器之后**：装配器提供了"多个三角形"，深度缓冲让它们之间的遮挡关系变得正确。在 5b 中，黄色三角形如果"在 3D 空间中处于 RGB 三角形的后面"，它仍然会被画到前面（画家算法）。5c 修正了这个问题——通过存储和比较每个像素的深度值，确保近处遮挡远处。
 
-（详细规划将在 5b 完成后编写，此处仅列出概要）
+**为什么透视校正插值和深度缓冲放在一起**：两者都依赖同一个关键数据——`w` 分量（裁剪空间坐标的第四维）。深度测试需要正确插值后的深度值，而正确的深度来自于对 `z/w` 和 `1/w` 的插值。透视校正插值用的也是同样的 `1/w` 插值机制。把两者放在一起实现，代码共用同一套重心坐标插值体系，避免后续再改一次。
 
-**预计涉及**：
-- 新建 `include/DepthBuffer.h` + `src/DepthBuffer.cpp`
-- Pipeline::drawTriangle 增加 z 插值 + 深度测试
-- Mesh 中的三角形使用不同的 z 坐标来演示遮挡
-- 可能需要透视校正插值（屏幕空间的线性插值在透视投影下不正确）
+#### 核心概念 1：深度缓冲的工作原理
+
+在 5b 中，三角形的绘制顺序决定了遮挡关系——后画的永远覆盖先画的。这叫"画家算法"（Painter's Algorithm），它的致命弱点是：如果三个三角形在 3D 空间中相互穿插（A 的一部分在 B 前面，另一部分在 B 后面），无论怎么排序都无法得到正确结果。
+
+深度缓冲（Z-buffer）解决了这个问题：它不是按三角形排序，而是**按像素排序**。每个像素存储一个深度值（该位置当前最近物体的深度）。新像素只有在比已存储的深度"更近"时，才会被写入帧缓冲（并更新深度值）。
+
+```
+深度缓冲算法（per-pixel）：
+  if new_depth < stored_depth:   // new_depth 更近
+      write pixel to framebuffer
+      stored_depth = new_depth
+  else:
+      discard pixel               // 被遮挡
+```
+
+> GPU 术语：深度测试的比较运算符是可配置的（`GL_LESS`、`GL_LEQUAL`、`GL_GREATER` 等）。我们使用 LESS——更近的深度（数值更小）通过测试。
+
+#### 核心概念 2：透视校正插值（Perspective-Correct Interpolation）
+
+阶段 4 用重心坐标在屏幕空间做线性插值。这在正交投影下是正确的，但在透视投影下会出错。为什么？
+
+想象一条铁轨通向远方。在屏幕空间，两条铁轨在图像顶部靠得很近（远处），在底部离得很远（近处）。屏幕空间的线性插值会给图像上半部分和下半部分分配相同的"铁轨间距变化率"——但实际世界中，铁轨间距在远处变化慢、近处变化快。屏幕空间不是线性的。
+
+**透视校正的核心思想**：属性除以 w 后在屏幕空间是线性的。所以正确的插值流程是：
+
+```
+逐顶点准备：
+  attr_over_w = attr / w          （例如 color.r / w, color.g / w, ...）
+  inv_w       = 1.0 / w
+
+逐像素屏幕空间线性插值：
+  attr_over_w_interp  = w0*attr_over_w0  + w1*attr_over_w1  + w2*attr_over_w2
+  inv_w_interp        = w0*inv_w0        + w1*inv_w1        + w2*inv_w2
+
+逐像素恢复：
+  attr_correct = attr_over_w_interp / inv_w_interp
+```
+
+为什么除以 w 后线性插值就对了？因为 w 携带了透视信息——`w = -view.z`（相机空间的深度）。除以 w 相当于"把 3D 空间的线性变化映射回屏幕空间的线性变化"。这个结论有严格的数学证明，但初学者只需记住操作步骤：**除 w → 插值 → 乘 w**。
+
+阶段 4 的注释中预留了这一点："为什么不需要透视校正插值…阶段 4 的三角形仍是纯 2D 的…阶段 5 引入真正的透视投影后，才需要透视校正。" 现在正是兑现它的时机。
+
+#### 本阶段的数据流
+
+```
+[VertexOutput(pos+w+color)]  →  [viewport]  →  [screen pos + edge func]  →  [barycentric weights]  →  [interp: depth + color corrected]  →  [depth test]  →  [fragment shader]  →  [setPixel + update depth]
+```
+
+对比阶段 4/5b，变化在两个环节：
+- **插值环节**：从单纯的屏幕空间线性插值，变为透视校正插值（颜色 ÷ w → 插值 → × w）；深度值通过 `z/w` 的线性插值获得
+- **新增深度测试环节**：在片段着色器之前，用插值后的深度与深度缓冲比较，不通过的像素直接丢弃
+
+#### 设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| DepthBuffer 存储格式 | NDC z 的 `[0,1]` 映射值 | 和真实 GPU 一致（`glDepthRange`）。`depth = ndc.z * 0.5 + 0.5`，0=近裁剪面，1=远裁剪面 |
+| 深度比较运算符 | LESS（`<`） | 0 最近，1 最远。"更小的深度值" = "更靠近相机" |
+| DepthBuffer 如何传给 Pipeline | `setDepthBuffer(DepthBuffer*)` 设置指针，nullptr 禁用深度测试 | 和 `setVertexShader`/`setFragmentShader` 的模式一致；nullptr 让深度测试变成可选的，向后兼容 |
+| Color 内部表示 | `glm::vec4`，利用其运算符重载做分量级乘除 | 避免手写逐个通道的乘除运算。`glm::vec4 / float` 自动做逐分量除法 |
+| 透视校正的时机 | 在重心坐标计算之后、深度测试之前一次完成 | 深度测试和颜色采样共用同一套 w 插值，不重复计算 |
+
+#### 需要修改/创建的文件
+
+| 文件 | 操作 | 核心改动 |
+|------|------|----------|
+| `include/DepthBuffer.h` | **新建** | DepthBuffer 类声明 |
+| `src/DepthBuffer.cpp` | **新建** | DepthBuffer 实现 |
+| `include/Pipeline.h` | 修改 | 新增 `DepthBuffer*` 成员 + `setDepthBuffer()` 方法 |
+| `src/Pipeline.cpp` | 修改 | 重构插值逻辑为透视校正；新增深度测试 |
+| `src/main.cpp` | 修改 | 创建 DepthBuffer，三角形放到不同 z 深度，每帧清除深度缓冲 |
+| `src/CMakeLists.txt` | 修改 | 新增 `DepthBuffer.cpp` |
+
+#### 各模块规格
+
+##### DepthBuffer（新建）
+
+深度缓冲是一个与帧缓冲同尺寸的浮点数组。每个像素存一个深度值。
+
+**类比**：帧缓冲存"颜色"，深度缓冲存"距离"。两者都是光栅化器的输出目标（render target）。
+
+**头文件 `include/DepthBuffer.h`**：
+
+```cpp
+class DepthBuffer {
+    int m_width, m_height;
+    std::vector<float> m_depths;   // [0, 1]，0 = 近裁剪面，1 = 远裁剪面
+
+public:
+    DepthBuffer(int w, int h);
+    void clear(float value = 1.0f);                         // 默认清到最远
+    bool testAndSet(int x, int y, float depth);              // LESS 测试 + 更新
+    float getDepth(int x, int y) const;                      // 只读（调试用）
+    int getWidth() const { return m_width; }
+    int getHeight() const { return m_height; }
+};
+```
+
+**实现文件 `src/DepthBuffer.cpp`**：
+
+构造函数：分配 `w * h` 个 float，全部初始化为 `1.0f`（最远）。
+
+`clear(float value)` ：`m_depths.assign(m_depths.size(), value)`。
+
+```cpp
+bool testAndSet(int x, int y, float depth) {
+    size_t idx = y * m_width + x;
+    if (depth < m_depths[idx]) {    // LESS 测试：更小的 depth = 更近
+        m_depths[idx] = depth;
+        return true;                 // 通过测试，画这个像素
+    }
+    return false;                    // 被遮挡，丢弃
+}
+```
+
+> 为什么返回 bool 而不是 void：调用方（Pipeline）需要知道像素是否通过深度测试，以决定是否继续执行片段着色器和写入帧缓冲。这就是 GPU 中 "discard" 语义的对应——片元在深度测试失败后被丢弃，不进入片段着色器。
+
+##### Types.h — 无需修改
+
+透视校正插值通过在 Pipeline 中使用 glm::vec4 运算完成，不需要新增类型。
+
+##### Pipeline.h 修改
+
+**新增成员**：
+
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `m_depthBuffer` | `DepthBuffer*` | 当前绑定的深度缓冲。nullptr 表示禁用深度测试（默认）|
+
+**新增方法**：
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `setDepthBuffer` | `void setDepthBuffer(DepthBuffer* db)` | 设置深度缓冲。传 nullptr 禁用深度测试 |
+
+`drawTriangle` 和 `drawMesh` 签名不变。
+
+##### Pipeline.cpp 修改 — 插值逻辑重构
+
+这是本阶段代码改动最集中的地方。当前 `drawTriangle` 的插值-着色-写入逻辑为：
+
+```
+// 当前代码（阶段 4-5b）
+Color inColor = {w0*out0.color.r() + w1*out1.color.r() + w2*out2.color.r(), ...};
+Color finalColor = m_fragmentShader.process(FragmentInput(inColor), uniforms);
+fb.setPixel(x, y, finalColor);
+```
+
+需要重构为：
+
+```
+// 新代码（阶段 5c）
+// 1. 插值 NDC z（用于深度测试）—— z/w 在屏幕空间线性插值
+float depth_ndc = w0*ndc0.z + w1*ndc1.z + w2*ndc2.z;
+float depth_01 = depth_ndc * 0.5f + 0.5f;     // 映射到 [0,1]
+
+// 2. 深度测试（如果启用）
+if (m_depthBuffer && !m_depthBuffer->testAndSet(x, y, depth_01))
+    continue;  // 被遮挡，跳过这个像素
+
+// 3. 透视校正颜色插值
+// 3a. 逐顶点准备：计算 1/w（w 是裁剪空间 w）
+float inv_w0 = 1.0f / out_0.position.w;
+float inv_w1 = 1.0f / out_1.position.w;
+float inv_w2 = 1.0f / out_2.position.w;
+
+// 3b. 屏幕空间插值 1/w
+float inv_w = w0*inv_w0 + w1*inv_w1 + w2*inv_w2;
+
+// 3c. 插值 color/w（利用 glm::vec4 的算数运算）
+glm::vec4 color_over_w = (glm::vec4(out_0.color) * inv_w0) * w0
+                       + (glm::vec4(out_1.color) * inv_w1) * w1
+                       + (glm::vec4(out_2.color) * inv_w2) * w2;
+
+// 3d. 恢复透视校正颜色：除以 inv_w
+Color correctedColor(color_over_w / inv_w);
+
+// 4. 片段着色器
+Color finalColor = m_fragmentShader.process(FragmentInput(correctedColor), uniforms);
+fb.setPixel(x, y, finalColor);
+```
+
+**步骤 3a（1/w 计算）可以提到像素循环之外**——它只依赖顶点数据，与像素位置无关。同理 `glm::vec4(out_0.color) * inv_w0` 也只依赖顶点。为了效率和代码清晰，在像素循环之前预先计算：
+
+```cpp
+// 像素循环之前：
+float inv_w0 = 1.0f / out_0.position.w;
+float inv_w1 = 1.0f / out_1.position.w;
+float inv_w2 = 1.0f / out_2.position.w;
+
+glm::vec4 c0_div_w(out_0.color);
+c0_div_w *= inv_w0;  // 等价于 c0_div_w = c0_div_w * inv_w0
+glm::vec4 c1_div_w(out_1.color);
+c1_div_w *= inv_w1;
+glm::vec4 c2_div_w(out_2.color);
+c2_div_w *= inv_w2;
+
+// 像素循环内部：
+float inv_w = w0*inv_w0 + w1*inv_w1 + w2*inv_w2;
+glm::vec4 color_over_w = c0_div_w * w0 + c1_div_w * w1 + c2_div_w * w2;
+Color correctedColor(color_over_w / inv_w);
+```
+
+> 性能说明：把不依赖像素的计算提到循环外是光栅化器的基本优化。虽然本项目的三角形很小（几百像素），这个习惯值得从一开始就养成。
+
+**退化三角形检测改进**：顺便修复一个遗留问题——`area == 0.0f` 对浮点数不安全，改为 `std::abs(area) < 1e-8f`。阶段 4 的注释已经指出了这一点。
+
+##### main.cpp 修改
+
+三个变化：（1）创建 DepthBuffer 并绑定；（2）三角形使用不同的 z 深度；（3）每帧清除深度缓冲。
+
+```cpp
+// 创建深度缓冲（和帧缓冲同尺寸）
+DepthBuffer depthBuf(WIDTH, HEIGHT);
+pipeline.setDepthBuffer(&depthBuf);
+
+// 构建网格 —— 三角形使用不同的 z 坐标来演示遮挡
+Mesh mesh;
+
+// 三角形 1：z = -0.3（较近，应该遮挡远处三角形）
+mesh.addTriangle(
+    Vertex(glm::vec4(-0.577f, -0.333f, -0.3f, 1.0f), Color(0.30, 0.65, 0.85)),
+    Vertex(glm::vec4( 0.577f, -0.333f, -0.3f, 1.0f), Color(0.98, 0.75, 0.24)),
+    Vertex(glm::vec4( 0.0f,  0.666f, -0.3f, 1.0f), Color(0.64, 0.54, 0.78))
+);
+
+// 三角形 2：z = 0.3（较远，轮到自己前面的三角形时被遮挡）
+mesh.addTriangle(
+    Vertex(glm::vec4(-0.2f, 0.2f, 0.3f, 1.0f), Color(0.49, 0.80, 0.77)),
+    Vertex(glm::vec4( 0.5f, 0.2f, 0.3f, 1.0f), Color(1.00, 0.60, 0.50)),
+    Vertex(glm::vec4( 0.15f, 0.7f, 0.3f, 1.0f), Color(0.70, 0.65, 0.85))
+);
+```
+
+渲染循环中增加深度缓冲清除：
+
+```cpp
+while (!glfwWindowShouldClose(screen.getWindow())) {
+    float angle = static_cast<float>(glfwGetTime());
+    uniforms.model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 0.1f, 0.0f));
+
+    fb.clear(Color{0.12f, 0.12f, 0.12f});   // 清除颜色
+    depthBuf.clear(1.0f);                     // 清除深度（重置为最远）
+    pipeline.drawMesh(fb, mesh, uniforms);
+    screen.present(fb);
+    glfwPollEvents();
+}
+```
+
+> 为什么每帧都要清除深度缓冲：和帧缓冲一样——上一帧的深度值对当前帧没有意义。不清除会导致残留的深度值阻碍新一帧的绘制。
+
+##### src/CMakeLists.txt 修改
+
+```cmake
+add_executable(test main.cpp
+        Screen.cpp
+        Framebuffer.cpp
+        Pipeline.cpp
+        Shader.cpp
+        Mesh.cpp
+        DepthBuffer.cpp)    ← 新增
+```
+
+#### 关键注意事项
+
+1. **深度测试的位置很重要**：放在片段着色器**之前**。如果像素被遮挡，就不该浪费计算资源去跑片段着色器。这也是 GPU 的"Early-Z"优化策略——在片元着色器之前做深度测试，避免为被遮挡的像素执行昂贵的着色计算。
+
+2. **深度值的来源是 ndc.z，不是 view.z**：`ndc.z = (z_clip / w_clip)` 经过透视除法，范围是 [-1, 1]。它和相机空间的 view.z 不同——ndc.z 是非线性的（近处精度高，远处精度低），这是透视投影矩阵的有意设计。直接插值 ndc.z 而非 view.z。
+
+3. **透视校正对颜色的影响**：不做的后果是什么？在透视投影下，三角形一侧的顶点靠近相机（w 小），另一侧远离相机（w 大）。不做校正时，颜色在屏幕空间线性过渡——远处顶点对颜色的贡献"偏重"，近处顶点"偏轻"。视觉表现是三角形旋转时颜色渐变不均匀，在近大远小效果明显的三角形上尤其扎眼。
+
+4. **DepthBuffer 尺寸必须和 Framebuffer 一致**：否则 `testAndSet(x, y, ...)` 的坐标可能越界。构造函数接收 `(w, h)`，由调用方（main）保证一致性。如果想加保护，可以在 `testAndSet` 里加断言（assert）。
+
+5. **`m_depthBuffer` 默认为 nullptr**：这意味着忘记调用 `setDepthBuffer` 时，程序不会崩溃——深度测试被静默跳过，回退到画家算法行为。这是"fail-safe"设计：忘记设置不会导致白屏。
+
+6. **退化三角形检测的改进**：`std::abs(area) < 1e-8f` 比 `area == 0.0f` 更安全。当三角形极度狭长（接近退化），边长可能很大但面积近似为零——浮点舍入误差可能导致 `area` 是 1e-16 而非精确 0。
+
+7. **旋转导致的自遮挡**：两个 z 深度不同（-0.3 vs 0.3）的三角形在绕 Y 轴旋转时，z 分量也会随旋转变化。这意味着遮挡关系会随旋转而动态改变——两个三角形交替出现在前面。这正是深度缓冲的优势体现：无论遮挡关系如何变化，每个像素的深度比较自动处理所有情况。
+
+8. **深度缓冲不处理半透明**：本阶段只处理不透明物体的遮挡。半透明物体需要不同的方法（alpha blending + 从远到近排序），那是另一个话题。
+
+#### 预期可见输出
+
+两个三角形绕 Y 轴旋转，当它们的 3D 位置导致重叠时，**离相机更近的三角形正确遮挡更远的三角形**——无论它们在 Mesh 中的添加顺序如何。遮挡关系随旋转动态变化，深度缓冲自动处理所有情况。颜色渐变在透视投影下保持自然均匀（透视校正生效）。
+
+和阶段 5b 对比最明显的区别：在 5b 中，三角形 2（后添加的）在重叠区域总是覆盖三角形 1。在 5c 中，三角形 1（z = -0.3）通常比三角形 2（z = 0.3）更近，所以在重叠区域三角形 1 覆盖三角形 2——尽管三角形 2 是"后画"的。
+
+#### 验证方法
+
+- **观察遮挡**：注视两个三角形的重叠区域，确认较近的（z=-0.3，三角形 1）遮挡较远的（z=0.3，三角形 2）。可以暂停旋转来仔细检查
+- **调换添加顺序**：把 `mesh.addTriangle` 的顺序颠倒（先加远的再加近的），遮挡结果不应改变——证明深度缓冲取代了画家算法
+- **禁用深度缓冲**：把 `setDepthBuffer` 那行注释掉，回复到 5b 的"后画覆盖"行为——对比验证深度缓冲的效果
+- **清除深度缓冲改为 0**：`depthBuf.clear(0.0f)`（最深处），所有像素都无法通过 LESS 测试，屏幕全黑——验证深度测试确实在起作用
+- **改 z 坐标**：把三角形 1 的 z 从 -0.3 改成 0.5（比三角形 2 更远），遮挡关系应反过来
+- **增加第三个三角形**：在不同 z 深度添加第三个三角形，验证三个三角形之间的复杂遮挡
+- **包围盒越界检测**：确保不同 z 深度的三角形即使部分超出屏幕也不会导致深度缓冲越界崩溃
 
 ---
 

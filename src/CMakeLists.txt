@@ -3,6 +3,7 @@ add_executable(test main.cpp
         Framebuffer.cpp
         Pipeline.cpp
         Shader.cpp
-        Mesh.cpp)
+        Mesh.cpp
+        DepthBuffer.cpp)
 
 target_link_libraries(test PRIVATE OpenGL::GL glfw glad::glad glm::glm)

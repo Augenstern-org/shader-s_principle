@@ -2,7 +2,7 @@
 // Created by neuroil on 2026/5/24.
 //
 
-#include "../include/Pipeline.h"
+#include "Pipeline.h"
 #include <algorithm>
 #include <cmath>
 
@@ -27,10 +27,14 @@ void Pipeline::drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1,
     VertexOutput out_0 = m_vertexShader.process(v0, uni);
     VertexOutput out_1 = m_vertexShader.process(v1, uni);
     VertexOutput out_2 = m_vertexShader.process(v2, uni);
+    // 透视除法
+    glm::vec3 ndc_0(out_0.position / out_0.position.w);
+    glm::vec3 ndc_1(out_1.position / out_1.position.w);
+    glm::vec3 ndc_2(out_2.position / out_2.position.w);
     // 视窗变换
-    glm::vec2 p0 = viewportTransform(out_0.position, fb.getWidth(), fb.getHeight());
-    glm::vec2 p1 = viewportTransform(out_1.position, fb.getWidth(), fb.getHeight());
-    glm::vec2 p2 = viewportTransform(out_2.position, fb.getWidth(), fb.getHeight());
+    glm::vec2 p0 = viewportTransform(glm::vec4(ndc_0, 1.0f), fb.getWidth(), fb.getHeight());
+    glm::vec2 p1 = viewportTransform(glm::vec4(ndc_1, 1.0f), fb.getWidth(), fb.getHeight());
+    glm::vec2 p2 = viewportTransform(glm::vec4(ndc_2, 1.0f), fb.getWidth(), fb.getHeight());
 
     // 退化三角形检测
     float area = edgeFunction(p0, p1, p2);
@@ -65,5 +69,12 @@ void Pipeline::drawTriangle(Framebuffer& fb, const Vertex& v0, const Vertex& v1,
                 fb.setPixel(x, y, finalColor);
             }
         }
+    }
+}
+
+void Pipeline::drawMesh(Framebuffer& fb, const Mesh& mesh, const Uniforms& uni) {
+    for (size_t t = 0; t < mesh.triangleCount(); ++t) {
+        size_t i = t * 3;
+        drawTriangle(fb, mesh.getVertex(i), mesh.getVertex(i + 1), mesh.getVertex(i + 2), uni);
     }
 }

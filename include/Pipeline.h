@@ -6,6 +6,7 @@
 #define SHADER_S_PRINCIPLE_PIPELINE_H
 
 #include "Framebuffer.h"
+#include "Mesh.h"
 #include "Shader.h"
 #include "Types.h"
 
@@ -17,6 +18,7 @@ class Pipeline {
     void setVertexShader(const VertexShader&);
     void setFragmentShader(const FragmentShader&);
     void drawTriangle(Framebuffer&, const Vertex&, const Vertex&, const Vertex&, const Uniforms&);
+    void drawMesh(Framebuffer&, const Mesh&, const Uniforms&);
 };
 
 #endif // SHADER_S_PRINCIPLE_PIPELINE_H

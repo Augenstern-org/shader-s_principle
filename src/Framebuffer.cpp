@@ -2,7 +2,7 @@
 // Created by neuroil on 2026/5/23.
 //
 
-#include "../include/Framebuffer.h"
+#include "Framebuffer.h"
 
 void Framebuffer::clear(Color c) { pixels.assign(pixels.size(), c); }
 

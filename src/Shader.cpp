@@ -1,4 +1,4 @@
-#include "../include/Shader.h"
+#include "Shader.h"
 
 // ########### Uniforms ###########
 
@@ -31,4 +31,6 @@ FragmentShader::FragmentShader()
 
 Color FragmentShader::process(const FragmentInput& in, const Uniforms& u) { return m_func(in, u); }
 
-Color BuiltinFragmentShader::passThrough(const FragmentInput& in, const Uniforms& u){ return in.color;}
+Color BuiltinFragmentShader::passThrough(const FragmentInput& in, const Uniforms& u) {
+    return in.color;
+}

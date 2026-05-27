@@ -11,14 +11,12 @@
 Camera::Camera(float fov, float aspect, float near, float far)
     : m_theta(0.0f)
     , m_phi(0.0f)
-    , m_radius(0.6f)
+    , m_radius(1.5f)
     , m_target(0.0f, 0.0f, 0.0f)
     , m_fov(fov)
     , m_aspect(aspect)
     , m_near(near)
     , m_far(far)
-    , m_autoRotate(false)
-    , m_autoRotateSpeed(1.0f)
 {}
 
 glm::vec3 Camera::sphericalToCartesian() const {
@@ -60,23 +58,4 @@ void Camera::onMouseDrag(float dx, float dy, int button) {
 void Camera::onMouseScroll(float dy) {
     m_radius -= dy * 0.1f;
     m_radius = std::max(m_radius, 0.1f);
-}
-
-void Camera::onKeyPress(int key) {
-    if (key == GLFW_KEY_SPACE) {
-        m_autoRotate = !m_autoRotate;
-    } else if (key == GLFW_KEY_UP) {
-        m_autoRotateSpeed *= 1.5f;
-    } else if (key == GLFW_KEY_DOWN) {
-        m_autoRotateSpeed /= 1.5f;
-    }
-}
-
-void Camera::setAutoRotate(bool enable) { m_autoRotate = enable; }
-void Camera::setAutoRotateSpeed(float speed) { m_autoRotateSpeed = speed; }
-
-void Camera::update(float dt) {
-    if (m_autoRotate) {
-        m_theta += m_autoRotateSpeed * dt;
-    }
 }

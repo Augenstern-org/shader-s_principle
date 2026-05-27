@@ -1,13 +1,14 @@
 //
 // Created by neuroil on 2026/5/23.
 //
-#include "Camera.h"
+#include "Control.h"
 #include "Mesh.h"
 #include "Renderer.h"
 #include "Screen.h"
 #include "Shader.h"
 #include "Types.h"
 #include <GLFW/glfw3.h>
+#include <glm/gtc/matrix_transform.hpp>
 #include <chrono>
 #include <cstdio>
 
@@ -33,7 +34,7 @@ int main() {
 
     float aspect = static_cast<float>(WIDTH) / static_cast<float>(HEIGHT);
     Camera camera(glm::radians(60.0f), aspect, 0.1f, 100.0f);
-    camera.setAutoRotate(true);
+    Control control(camera);
 
     renderer.setVertexShader(VertexShader(BuiltinVertexShader::mvp));
     renderer.setFragmentShader(FragmentShader(BuiltinFragmentShader::passThrough));
@@ -41,10 +42,10 @@ int main() {
     Mesh mesh = createDemoMesh();
 
     GLFWwindow* window = screen.getWindow();
-    glfwSetWindowUserPointer(window, &camera);
+    glfwSetWindowUserPointer(window, &control);
 
     glfwSetCursorPosCallback(window, [](GLFWwindow* win, double x, double y) {
-        auto* cam = static_cast<Camera*>(glfwGetWindowUserPointer(win));
+        auto* ctrl = static_cast<Control*>(glfwGetWindowUserPointer(win));
         static double lastX = x, lastY = y;
         float dx = static_cast<float>(x - lastX);
         float dy = static_cast<float>(y - lastY);
@@ -57,45 +58,49 @@ int main() {
             button = GLFW_MOUSE_BUTTON_2;
 
         if (button != -1)
-            cam->onMouseDrag(dx, dy, button);
+            ctrl->onMouseDrag(dx, dy, button);
     });
 
     glfwSetScrollCallback(window, [](GLFWwindow* win, double /*x_offset*/, double y_offset) {
-        auto* cam = static_cast<Camera*>(glfwGetWindowUserPointer(win));
-        cam->onMouseScroll(static_cast<float>(y_offset));
+        auto* ctrl = static_cast<Control*>(glfwGetWindowUserPointer(win));
+        ctrl->onMouseScroll(static_cast<float>(y_offset));
     });
 
     glfwSetKeyCallback(window, [](GLFWwindow* win, int key, int /*scan_code*/, int action, int /*mods*/) {
         if (action == GLFW_PRESS) {
-            auto* cam = static_cast<Camera*>(glfwGetWindowUserPointer(win));
-            cam->onKeyPress(key);
+            auto* ctrl = static_cast<Control*>(glfwGetWindowUserPointer(win));
+            ctrl->onKeyPress(key);
         }
     });
 
     double lastTime = glfwGetTime();
+
+#ifndef NDEBUG
     int frameCount = 0;
     double accFrameTime = 0.0;
+#endif
 
     while (!glfwWindowShouldClose(window)) {
         double currentTime = glfwGetTime();
         float dt = static_cast<float>(currentTime - lastTime);
         lastTime = currentTime;
 
-        camera.update(dt);
+        control.update(dt);
 
         Uniforms uni;
-        uni.model = glm::mat4(1.0f);
+        uni.model = glm::rotate(glm::mat4(1.0f), control.objectAngle(), glm::vec3(0.0f, 1.0f, 0.0f));
         uni.view = camera.viewMatrix();
         uni.projection = camera.projectionMatrix();
 
-        // 性能分析
+#ifndef NDEBUG
         auto t0 = std::chrono::high_resolution_clock::now();
+#endif
 
         renderer.beginFrame(Color{0.12f, 0.12f, 0.12f});
         renderer.draw(mesh, uni);
         renderer.endFrame();
 
-        // 性能分析
+#ifndef NDEBUG
         auto t1 = std::chrono::high_resolution_clock::now();
         double frameMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         accFrameTime += frameMs;
@@ -105,6 +110,7 @@ int main() {
                         frameCount, accFrameTime / 60.0, 60000.0 / accFrameTime);
             accFrameTime = 0.0;
         }
+#endif
 
         glfwPollEvents();
     }

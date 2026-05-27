@@ -7,6 +7,7 @@ add_executable(test main.cpp
         DepthBuffer.cpp
         Camera.cpp
         Rasterizer.cpp
-        Renderer.cpp)
+        Renderer.cpp
+        Control.cpp)
 
 target_link_libraries(test PRIVATE OpenGL::GL glfw glad::glad glm::glm)

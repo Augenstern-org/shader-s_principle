@@ -16,20 +16,12 @@ public:
 
     void onMouseDrag(float dx, float dy, int button);
     void onMouseScroll(float dy);
-    void onKeyPress(int key);
-
-    void setAutoRotate(bool enable);
-    void setAutoRotateSpeed(float speed);
-    void update(float dt);
 
 private:
     float m_theta, m_phi, m_radius;
     glm::vec3 m_target;
 
     float m_fov, m_aspect, m_near, m_far;
-
-    bool m_autoRotate;
-    float m_autoRotateSpeed;
 
     glm::vec3 sphericalToCartesian() const;
 };

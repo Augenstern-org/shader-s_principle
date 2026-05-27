@@ -26,7 +26,7 @@ class VertexShader {
 
     VertexShader();
     explicit VertexShader(ShaderFunc f) : m_func(f) {}
-    VertexOutput process(const Vertex&, const Uniforms&);
+    VertexOutput process(const Vertex&, const Uniforms&) const;
 };
 
 namespace BuiltinVertexShader {
@@ -46,7 +46,7 @@ class FragmentShader {
 
     FragmentShader();
     explicit FragmentShader(ShaderFunc f) : m_func(f) {}
-    Color process(const FragmentInput&, const Uniforms&);
+    Color process(const FragmentInput&, const Uniforms&) const;
 };
 
 namespace BuiltinFragmentShader{

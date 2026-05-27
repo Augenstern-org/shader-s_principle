@@ -1,73 +1,113 @@
 //
 // Created by neuroil on 2026/5/23.
 //
-#include "Framebuffer.h"
+#include "Camera.h"
 #include "Mesh.h"
-#include "Pipeline.h"
+#include "Renderer.h"
 #include "Screen.h"
 #include "Shader.h"
 #include "Types.h"
 #include <GLFW/glfw3.h>
-#include <glm/gtc/matrix_transform.hpp>
+#include <chrono>
+#include <cstdio>
 
-#define WIDTH 1000
-#define HEIGHT 1000
+constexpr int WIDTH = 1000;
+constexpr int HEIGHT = 1000;
+constexpr const char* TITLE = "Shader's principle";
 
-const char* title = "Shader's principle";
-
-int main() {
-    // 创建窗口
-    Screen screen(WIDTH, HEIGHT, title);
-    // 创建 UBO
-    Uniforms uniforms;
-    uniforms.model = glm::mat4(1.0f); // 初始为单位矩阵
-    uniforms.projection =
-        glm::perspective(glm::radians(60.0f), // FOV: 60 度
-                         static_cast<float>(WIDTH) / static_cast<float>(HEIGHT), // 宽高比
-                         0.1f, // 近裁剪面
-                         100.0f // 远裁剪面
-        );
-    uniforms.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.0f), // 相机位置：z=2，在三角形前方
-                                glm::vec3(0.0f, 0.0f, 0.0f), // 看向原点（三角形所在位置）
-                                glm::vec3(0.0f, 1.0f, 0.0f) // 上方向：Y 轴
-    );
-
-    // 创建着色器
-    VertexShader vertexShader(BuiltinVertexShader::mvp);
-    FragmentShader fragShader(BuiltinFragmentShader::passThrough);
-    // 创建缓冲区
-    Framebuffer fb(WIDTH, HEIGHT);
-    DepthBuffer depth_buffer(WIDTH, HEIGHT);
-    // 创建管线
-    Pipeline pipeline;
-    // 绑定管线
-    pipeline.setVertexShader(vertexShader);
-    pipeline.setFragmentShader(fragShader);
-    pipeline.setDepthBuffer(&depth_buffer);
-
-    // 创建Mesh
+static Mesh createDemoMesh() {
     Mesh mesh;
     mesh.addTriangle(Vertex(glm::vec4(-0.577f, -0.333f, 0.0f, 1.0f), Color(0.30, 0.65, 0.85)),
-                     Vertex(glm::vec4(0.577f, -0.333f, 0.0f, 1.0f), Color(0.98, 0.75, 0.24)),
-                     Vertex(glm::vec4(0.0f, 0.666f, 0.0f, 1.0f), Color(0.64, 0.54, 0.78)));
+                     Vertex(glm::vec4( 0.577f, -0.333f, 0.0f, 1.0f), Color(0.98, 0.75, 0.24)),
+                     Vertex(glm::vec4( 0.0f,  0.666f, 0.0f, 1.0f), Color(0.64, 0.54, 0.78)));
 
     mesh.addTriangle(Vertex(glm::vec4(-0.2f, 0.2f, 0.2f, 1.0f), Color(0.49, 0.80, 0.77)),
-                     Vertex(glm::vec4(0.5f, 0.2f, 0.2f, 1.0f), Color(1.00, 0.60, 0.50)),
-                     Vertex(glm::vec4(0.15f, 0.7f, 0.4f, 1.0f), Color(0.70, 0.65, 0.85)));
+                     Vertex(glm::vec4( 0.5f, 0.2f, 0.2f, 1.0f), Color(1.00, 0.60, 0.50)),
+                     Vertex(glm::vec4( 0.15f, 0.7f, 0.4f, 1.0f), Color(0.70, 0.65, 0.85)));
+    return mesh;
+}
 
-    // 主循环
-    while (!glfwWindowShouldClose(screen.getWindow())) {
-        float angle = static_cast<float>(glfwGetTime());
-        uniforms.model = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 0.1f, 0.0f));
+int main() {
+    Screen screen(WIDTH, HEIGHT, TITLE);
+    Renderer renderer(WIDTH, HEIGHT, screen);
 
-        fb.clear(Color{0.12f, 0.12f, 0.12f}); // 1. 清屏
-        depth_buffer.clear(); // 2. 清除深度
-        pipeline.drawMesh(fb, mesh, uniforms); // 3. 画三角形
-        screen.present(fb); // 4. 显示到窗口
+    float aspect = static_cast<float>(WIDTH) / static_cast<float>(HEIGHT);
+    Camera camera(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+    camera.setAutoRotate(true);
+
+    renderer.setVertexShader(VertexShader(BuiltinVertexShader::mvp));
+    renderer.setFragmentShader(FragmentShader(BuiltinFragmentShader::passThrough));
+
+    Mesh mesh = createDemoMesh();
+
+    GLFWwindow* window = screen.getWindow();
+    glfwSetWindowUserPointer(window, &camera);
+
+    glfwSetCursorPosCallback(window, [](GLFWwindow* win, double x, double y) {
+        auto* cam = static_cast<Camera*>(glfwGetWindowUserPointer(win));
+        static double lastX = x, lastY = y;
+        float dx = static_cast<float>(x - lastX);
+        float dy = static_cast<float>(y - lastY);
+        lastX = x; lastY = y;
+
+        int button = -1;
+        if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS)
+            button = GLFW_MOUSE_BUTTON_1;
+        else if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_2) == GLFW_PRESS)
+            button = GLFW_MOUSE_BUTTON_2;
+
+        if (button != -1)
+            cam->onMouseDrag(dx, dy, button);
+    });
+
+    glfwSetScrollCallback(window, [](GLFWwindow* win, double /*x_offset*/, double y_offset) {
+        auto* cam = static_cast<Camera*>(glfwGetWindowUserPointer(win));
+        cam->onMouseScroll(static_cast<float>(y_offset));
+    });
+
+    glfwSetKeyCallback(window, [](GLFWwindow* win, int key, int /*scan_code*/, int action, int /*mods*/) {
+        if (action == GLFW_PRESS) {
+            auto* cam = static_cast<Camera*>(glfwGetWindowUserPointer(win));
+            cam->onKeyPress(key);
+        }
+    });
+
+    double lastTime = glfwGetTime();
+    int frameCount = 0;
+    double accFrameTime = 0.0;
+
+    while (!glfwWindowShouldClose(window)) {
+        double currentTime = glfwGetTime();
+        float dt = static_cast<float>(currentTime - lastTime);
+        lastTime = currentTime;
+
+        camera.update(dt);
+
+        Uniforms uni;
+        uni.model = glm::mat4(1.0f);
+        uni.view = camera.viewMatrix();
+        uni.projection = camera.projectionMatrix();
+
+        // 性能分析
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        renderer.beginFrame(Color{0.12f, 0.12f, 0.12f});
+        renderer.draw(mesh, uni);
+        renderer.endFrame();
+
+        // 性能分析
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double frameMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        accFrameTime += frameMs;
+        ++frameCount;
+        if (frameCount % 60 == 0) {
+            std::fprintf(stderr, "frame: %5d  avg: %7.3f ms  (%.1f fps)\n",
+                        frameCount, accFrameTime / 60.0, 60000.0 / accFrameTime);
+            accFrameTime = 0.0;
+        }
+
         glfwPollEvents();
     }
 
-    //释放资源
-    // screen 析构函数管理窗口生命周期
     return 0;
 }

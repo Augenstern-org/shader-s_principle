@@ -11,7 +11,7 @@ VertexShader::VertexShader()
           return {v.position, v.color};
       }) {}
 
-VertexOutput VertexShader::process(const Vertex& v, const Uniforms& u) { return m_func(v, u); }
+VertexOutput VertexShader::process(const Vertex& v, const Uniforms& u) const { return m_func(v, u); }
 
 VertexOutput BuiltinVertexShader::mvp(const Vertex& v, const Uniforms& u) {
     return {u.projection * u.view * u.model * v.position, v.color};
@@ -29,7 +29,7 @@ VertexOutput BuiltinVertexShader::test(const Vertex& v, const Uniforms& u) {
 FragmentShader::FragmentShader()
     : m_func([](const FragmentInput& in, const Uniforms&) -> Color { return in.color; }) {}
 
-Color FragmentShader::process(const FragmentInput& in, const Uniforms& u) { return m_func(in, u); }
+Color FragmentShader::process(const FragmentInput& in, const Uniforms& u) const { return m_func(in, u); }
 
 Color BuiltinFragmentShader::passThrough(const FragmentInput& in, const Uniforms& u) {
     return in.color;

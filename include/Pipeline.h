@@ -12,16 +12,14 @@
 #include "DepthBuffer.h"
 
 class Pipeline {
-    VertexShader m_vertexShader;
-    FragmentShader m_fragmentShader;
-    DepthBuffer* m_depthBuffer;
-
 public:
-    void setVertexShader(const VertexShader&);
-    void setFragmentShader(const FragmentShader&);
-    void drawTriangle(Framebuffer&, const Vertex&, const Vertex&, const Vertex&, const Uniforms&);
-    void drawMesh(Framebuffer&, const Mesh&, const Uniforms&);
-    void setDepthBuffer(DepthBuffer* db);
+    void drawTriangle(Framebuffer& fb, DepthBuffer* depthBuffer,
+                      const VertexShader& vertShader, const FragmentShader& fragShader,
+                      const Vertex& v0, const Vertex& v1, const Vertex& v2,
+                      const Uniforms& uni);
+    void drawMesh(Framebuffer& fb, DepthBuffer* depthBuffer,
+                  const VertexShader& vertShader, const FragmentShader& fragShader,
+                  const Mesh& mesh, const Uniforms& uni);
 };
 
 #endif // SHADER_S_PRINCIPLE_PIPELINE_H

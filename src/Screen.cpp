@@ -25,6 +25,8 @@ Screen::Screen(int w, int h, const char* t) : width(w), height(h), title(t) {
         window = nullptr;
         return;
     }
+    // 垂直同步
+    glfwSwapInterval(0);
 
     glGenTextures(1, &textureID);
     glBindTexture(GL_TEXTURE_2D, textureID);

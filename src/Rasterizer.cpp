@@ -24,7 +24,7 @@ void rasterizeTriangle(
     const VertexOutput& out2
 ) {
     float area = edgeFunction(p0, p1, p2);
-    if (std::abs(area) < 1e-8f) return;
+    if (area < 1e-8f) return;
 
     int minX = std::max(0, (int)std::floor(std::min({p0.x, p1.x, p2.x})));
     int maxX = std::min(fb.getWidth() - 1, (int)std::ceil(std::max({p0.x, p1.x, p2.x})));
@@ -46,7 +46,7 @@ void rasterizeTriangle(
             float e2 = edgeFunction(p1, p2, pixelCenter);
             float e3 = edgeFunction(p2, p0, pixelCenter);
 
-            if ((e1 >= 0 && e2 >= 0 && e3 >= 0) || (e1 <= 0 && e2 <= 0 && e3 <= 0)) {
+            if (e1 >= 0 && e2 >= 0 && e3 >= 0) {
                 float w0 = e2 / area;
                 float w1 = e3 / area;
                 float w2 = e1 / area;

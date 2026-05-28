@@ -36,8 +36,8 @@ void Pipeline::drawMesh(Framebuffer& fb, DepthBuffer* depthBuffer,
                         const VertexShader& vertShader, const FragmentShader& fragShader,
                         const Mesh& mesh, const Uniforms& uni) {
     for (size_t t = 0; t < mesh.triangleCount(); ++t) {
-        size_t i = t * 3;
+        glm::uvec3 i = mesh.getTriangleIndices(t);
         drawTriangle(fb, depthBuffer, vertShader, fragShader,
-                     mesh.getVertex(i), mesh.getVertex(i + 1), mesh.getVertex(i + 2), uni);
+                     mesh.getVertex(i.x), mesh.getVertex(i.y), mesh.getVertex(i.z), uni);
     }
 }

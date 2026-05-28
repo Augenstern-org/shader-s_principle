@@ -26,6 +26,7 @@ class Mesh {
         m_vertices.clear();
         m_indices.clear();
     }
+    void createFallbackMesh();
 };
 
 #endif // SHADER_S_PRINCIPLE_MESH_H

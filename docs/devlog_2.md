@@ -569,19 +569,206 @@ GLM 的 `glm::uvec3` 是 `glm::vec<3, unsigned int>`，三个分量 `.x`, `.y`, 
 
 ## 阶段 7：模型加载
 
-**日期**：（待规划）  
+**日期**：2026-05-28（规划）  
 **状态**：[ ] 待实现
 
-**目标**：解析 `.obj` 文件（Wavefront OBJ 格式），生成 Mesh，替代手写三角形。
-
-### 概要
-
-- 新建 `ObjLoader` 模块：逐行解析 `.obj` 的 `v`（顶点位置）、`vt`（纹理坐标）、`vn`（法线）、`f`（面）
-- 仅支持三角形面（`f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3`）
-- 或使用 tinyobjloader 等单头文件库
-- 加载 oiioi 小猫模型，替换 demo 三角形
+**目标**：引入 `tinyobjloader` 解析 OBJ 模型文件，生成 Mesh，替代手写三角形。
 
 ---
+
+### 一、设计决策
+
+#### 1.1 使用 tinyobjloader
+
+选择 **tinyobjloader**（单头文件库），不手写解析器。
+
+原因：
+- 渲染管线才是这个项目的核心，OBJ 解析不是。手写解析器就是花时间解决已解决的问题
+- tinyobjloader 是一个成熟的单头文件库，处理了三角形面、四边形三角化、Bézier/NURBS 曲面 tessellation、负索引、相对索引、行续行等等所有边界情况
+- ObjLoader 的角色简化为"薄转换层"：tinyobjloader 数据 → Mesh，约 40 行代码
+- tinyobjloader 返回的顶点已包含 position + normal + texcoord，天然对接阶段 8/9 的 Vertex 扩展
+
+#### 1.2 ObjLoader 的角色
+
+ObjLoader 不再是"解析器"，而是"转换适配器"——把 tinyobjloader 的输出结构转换为项目的 Mesh 格式：
+
+```
+tinyobj::LoadObj() → tinyobj::attrib_t + tinyobj::shape_t → 循环 → Mesh::addVertex/addIndexedTriangle
+```
+
+#### 1.3 顶点颜色合成（不变）
+
+OBJ 不含顶点颜色。tinyobjloader 返回的每个顶点有 position，但没有 color。仍然用 `normalize(position) * 0.5 + 0.5` 合成，阶段 9 光照替代。
+
+#### 1.4 模型归一化（不变）
+
+和之前方案一致：加载后计算包围盒，缩放使最长轴 = 2.0，居中于原点。
+
+---
+
+### 二、文件变更清单
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 修改 | `src/Mesh.cpp` | 补全 `addVertex` 和 `addIndexedTriangle`（阶段六遗留 stub） |
+| **新建** | `include/ObjLoader.h` | `namespace ObjLoader { Mesh load(const std::string&); }` |
+| **新建** | `src/ObjLoader.cpp` | tinyobjloader 调用 + 数据 → Mesh 转换（~40 行） |
+| **新建** | `include/tiny_obj_loader.h` | tinyobjloader 单头文件（从 GitHub 下载） |
+| 修改 | `src/CMakeLists.txt` | `add_executable` 新增 `ObjLoader.cpp` |
+| 修改 | `src/main.cpp` | 删除 `createDemoMesh()`，改用 `ObjLoader::load()` |
+| **新建** | `assets/` | 存放 .obj 模型文件 |
+
+---
+
+### 三、模块设计
+
+#### 3.1 ObjLoader
+
+```cpp
+// include/ObjLoader.h
+#ifndef SHADER_S_PRINCIPLE_OBJLOADER_H
+#define SHADER_S_PRINCIPLE_OBJLOADER_H
+
+#include "Mesh.h"
+#include <string>
+
+namespace ObjLoader {
+
+Mesh load(const std::string& filepath);
+
+} // namespace ObjLoader
+
+#endif
+```
+
+**`load()` 的执行流程**：
+
+```
+1. tinyobj::ObjReader reader;
+2. reader.ParseFromFile(filepath);
+   失败 → 打印 reader.Error() + reader.Warning()，返回空 Mesh
+3. const auto& attrib = reader.GetAttrib();   // positions, normals, texcoords
+   const auto& shapes = reader.GetShapes();   // 每个 shape 含 mesh.indices
+4. 第一遍：遍历所有 shape 的所有索引，收集顶点位置 → 计算包围盒
+5. 计算 scale 和 offset（归一化到 2.0 单位）
+6. 第二遍：遍历所有 shape 的所有面（tinyobjloader 已将四边形三角化）：
+   - 提取 3 个顶点的 position（从 attrib.vertices 按索引取，应用 scale + offset）
+   - 合成颜色 = normalize(pos) * 0.5 + 0.5
+   - mesh.addVertex(Vertex(vec4(pos, 1.0), color))
+   - mesh.addIndexedTriangle(vi, vi+1, vi+2)
+7. 返回 Mesh
+```
+
+**tinyobjloader 数据访问**：
+
+```cpp
+// tinyobjloader 的索引结构
+tinyobj::index_t idx = shape.mesh.indices[i];
+float px = attrib.vertices[3 * idx.vertex_index + 0];  // x
+float py = attrib.vertices[3 * idx.vertex_index + 1];  // y
+float pz = attrib.vertices[3 * idx.vertex_index + 2];  // z
+// idx.normal_index, idx.texcoord_index — 阶段 8/9 用
+```
+
+tinyobjloader 已经处理了：三角形/四边形、负索引、Bézier/NURBS tessellation、顶点去重/不复用。我们只需按 `mesh.indices` 的顺序取出顶点位置，构建 Mesh。
+
+#### 3.2 Mesh 补全
+
+同之前方案：
+```cpp
+uint32_t Mesh::addVertex(const Vertex& v) {
+    uint32_t idx = static_cast<uint32_t>(m_vertices.size());
+    m_vertices.push_back(v);
+    return idx;
+}
+
+void Mesh::addIndexedTriangle(uint32_t i0, uint32_t i1, uint32_t i2) {
+    m_indices.push_back({i0, i1, i2});
+}
+```
+
+#### 3.3 main.cpp 变化
+
+删除 `createDemoMesh()`，改为：
+
+```cpp
+Mesh mesh = ObjLoader::load("../assets/model.obj");
+if (mesh.triangleCount() == 0) {
+    std::fprintf(stderr, "Failed to load model\n");
+    return 1;
+}
+```
+
+---
+
+### 四、获取 tinyobjloader
+
+```bash
+# 从仓库根目录执行
+wget https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/release/tiny_obj_loader.h \
+     -O include/tiny_obj_loader.h
+```
+
+或在 CMake 中用 `FetchContent` 自动下载。简单起见，手动下载放到 `include/` 下即可。
+
+`tiny_obj_loader.h` 是 MIT 许可的单头文件，`#define TINYOBJLOADER_IMPLEMENTATION` 在一个 .cpp 中（ObjLoader.cpp）启用实现。
+
+---
+
+### 五、实现顺序
+
+| 步骤 | 操作 | 原因 |
+|------|------|------|
+| 1 | 补全 `Mesh::addVertex` + `addIndexedTriangle` | 阶段六遗留 stub |
+| 2 | 下载 `tiny_obj_loader.h` → `include/` | 依赖就位 |
+| 3 | 新建 `ObjLoader.h` + `ObjLoader.cpp` | 转换层实现 |
+| 4 | 修改 `src/CMakeLists.txt` | 新增 ObjLoader.cpp |
+| 5 | 创建 `assets/` + 放入模型 | 测试资产就位 |
+| 6 | 修改 `main.cpp` | 替换 demo mesh |
+| 7 | 编译运行 + 验证 | 端到端测试 |
+
+---
+
+### 六、关键注意事项
+
+#### 6.1 三角形数可能很大
+
+tinyobjloader 会将 Bézier 曲面 tessellate 为三角形（使用 `--tesstype` 或默认配置）。含曲面片的 .obj 文件加载后可能有数千三角形。如果 FPS 过低，减小 tessellation 密度或换用更简单的模型。
+
+#### 6.2 OBJ 文件路径
+
+和之前方案一致：从 build 目录运行 `./src/test`，路径为 `../assets/model.obj`。
+
+#### 6.3 顶点不复用的原因
+
+tinyobjloader 默认按面遍历，每个面返回独立的顶点（即使不同面共享同一位置）。这和之前方案的行为一致——每个面创建独立顶点，不在面之间复用。原因同样是 hard edges 的法线不连续问题（阶段 9）。
+
+#### 6.4 模型归一化时机
+
+归一化发生在顶点数据从 tinyobjloader 取出之后、`addVertex` 之前。即 scale/offset 只影响 Mesh 中的数据，不影响 tinyobjloader 的原始数据。
+
+#### 6.5 只支持单个 shape
+
+当前版本遍历所有 shapes 并合并到一个 Mesh 中。如果模型有多个 shapes（如多个物体组合），它们会被合并渲染。未来可按需扩展为多 Mesh 或多 draw call。
+
+#### 6.6 错误处理
+
+| 错误类型 | 策略 |
+|----------|------|
+| 文件不存在 | tinyobjloader 返回错误，打印 `reader.Error()`，返回空 Mesh |
+| OBJ 格式错误 | tinyobjloader 返回 warning，打印 `reader.Warning()` |
+| 加载后 triangleCount == 0 | main.cpp 判断并退出，stderr 报错 |
+
+---
+
+### 七、验证方法
+
+1. **编译通过**：`ninja -C build` 无错误
+2. **load 成功**：`triangleCount() > 0`，无 stderr 报错
+3. **模型可见**：屏幕上显示彩色模型（position-derived 颜色）
+4. **背面剔除正常**：旋转时背面三角形消失
+5. **Bézier 曲面**：用户提供的 Bezier patch .obj 文件可直接加载（tinyobjloader 自动 tessellate）
+6. **交互正常**：鼠标旋转缩放、键盘 M/Up/Down 均正常工作
 
 ## 阶段 8：纹理映射
 

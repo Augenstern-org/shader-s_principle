@@ -11,7 +11,7 @@
 Camera::Camera(float fov, float aspect, float near, float far)
     : m_theta(0.0f)
     , m_phi(0.0f)
-    , m_radius(1.5f)
+    , m_radius(4.0f)
     , m_target(0.0f, 0.0f, 0.0f)
     , m_fov(fov)
     , m_aspect(aspect)

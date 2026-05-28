@@ -16,7 +16,7 @@ void Control::onMouseScroll(float dy) {
 }
 
 void Control::onKeyPress(int key) {
-    if (key == GLFW_KEY_M) {
+    if (key == GLFW_KEY_SPACE) {
         m_objAutoRotate = !m_objAutoRotate;
     } else if (key == GLFW_KEY_UP) {
         m_objSpeed *= 1.5f;

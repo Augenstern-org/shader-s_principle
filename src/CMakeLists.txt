@@ -9,7 +9,9 @@ add_executable(test main.cpp
         Rasterizer.cpp
         Renderer.cpp
         Control.cpp
-        ObjLoader.cpp)
+        ObjLoader.cpp
+        Texture.cpp
+        ../include/Texture.h)
 
 target_link_libraries(test PRIVATE OpenGL::GL glfw glad::glad glm::glm)
 

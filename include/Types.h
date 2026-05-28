@@ -35,22 +35,29 @@ struct alignas(16) Color {
 struct Vertex {
     glm::vec4 position;
     Color color;
-    Vertex() : position(0, 0, 0, 1) {}
-    Vertex(const glm::vec4& pos) : position(pos) {}
-    Vertex(const glm::vec4& pos, const Color& c) : position(pos), color(c) {}
+    glm::vec2 texcoord;
+
+    Vertex() : position(0, 0, 0, 1), texcoord(0.0f) {}
+    Vertex(const glm::vec4& pos) : position(pos), texcoord(0.0f) {}
+    Vertex(const glm::vec4& pos, const Color& c) : position(pos), color(c), texcoord(0.0f) {}
+    Vertex(const glm::vec4& pos, const Color& c, const glm::vec2& uv) : position(pos), color(c), texcoord(uv) {}
 };
 
 struct VertexOutput {
     glm::vec4 position;
     Color color;
+    glm::vec2 texcoord;
 
     VertexOutput() : position(0.0f), color() {}
     VertexOutput(const glm::vec4& p, const Color& c) : position(p), color(c) {}
+    VertexOutput(const glm::vec4& p, const Color& c, const glm::vec2& uv) : position(p), color(c), texcoord(uv) {}
 };
 
 struct FragmentInput {
     Color color;
-    FragmentInput(Color c):color(c.data){}
+    glm::vec2 texcoord;
+
+    explicit FragmentInput(Color c, glm::vec2 uv = glm::vec2(0.0f)) : color(c.data), texcoord(uv) {}
 };
 
 #endif // SHADER_S_PRINCIPLE_TYPES_H

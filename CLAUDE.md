@@ -26,23 +26,34 @@ A CPU software rasterizer that simulates the GPU rendering pipeline. GLFW + Open
 ```
 Types.h  (Color, Vertex, VertexOutput, FragmentInput)
    ↑
-Framebuffer   Shader.h (vertex + fragment shaders + Uniforms)   Mesh.h (triangle container)   DepthBuffer.h (depth storage + test)
-   ↑              ↑                                              ↑                              ↑
-Screen         Rasterizer (edge-function rasterizer, barycentric + perspective-correct interp, depth test, fragment shader invocation)
-   ↑              ↑
-  main.cpp  ←  Renderer (owns Framebuffer, DepthBuffer, Pipeline, shaders — high-level facade)
-                ↑
-             Pipeline (vertex shader → perspective divide → viewport → Rasterizer)
-                ↑
-             Camera (orbit camera, spherical coords → view + projection matrices)
-                ↑
-             Control (input handling, object auto-rotation toggle)
+Framebuffer   Shader.h (vertex + fragment shaders + Uniforms)   Mesh.h (indexed triangle container)   DepthBuffer.h   Texture.h (image storage + sampling)
+   ↑              ↑                                              ↑                                     ↑               ↑
+Screen         Rasterizer                                       ObjLoader (tinyobjloader wrapper)       |               |
+   ↑              ↑                                              ↑                                     |               |
+  main.cpp  ←  Renderer (owns Framebuffer, DepthBuffer, Pipeline, shaders) ←────────────────────────────┘               |
+                ↑                                                                                                      |
+             Pipeline (vertex shader → perspective divide → viewport → Rasterizer)                                     |
+                ↑                                                                                                      |
+             Camera (orbit camera, spherical coords → view + projection matrices)                                      |
+                ↑                                                                                                      |
+             Control (input handling, object auto-rotation toggle)                                                     |
+                                                                                                                       |
+             Uniforms (model/view/projection + const Texture*) ←────────────────────────────────────────────────────────┘
 ```
 
 **Data flow through the pipeline:**
 
 ```
-[Model-space vertices] → [VertexShader (MVP)] → [clip coords] → [perspective divide] → [NDC coords] → [viewportTransform] → [screen coords] → [Rasterizer: edge function → barycentric + perspective-correct interp → depth test → FragmentShader] → [Framebuffer::setPixel]
+[Model-space vertices: pos + color + texcoord]
+  → [VertexShader (MVP, pass-through texcoord)]
+  → [clip coords: pos + color + texcoord]
+  → [perspective divide]
+  → [NDC coords]
+  → [viewportTransform]
+  → [screen coords]
+  → [Rasterizer: edge function → barycentric + perspective-correct interp (color + texcoord) → depth test → FragmentShader]
+  → [FragmentShader: sample Texture(texcoord) → Color]
+  → [Framebuffer::setPixel]
 ```
 
 ### Key design changes from earlier stages
@@ -52,25 +63,31 @@ Screen         Rasterizer (edge-function rasterizer, barycentric + perspective-c
 - **Renderer is the high-level facade** — owns Framebuffer, DepthBuffer, Pipeline, and the current shader bindings. `main.cpp` talks to Renderer, not directly to Pipeline.
 - **Camera uses spherical coordinates** — orbit camera with `theta/phi/radius` around a target point. Mouse drag (left=orbit, right=pan) and scroll (zoom).
 - **Control decouples input from camera** — handles key presses (M toggles auto-rotation, Up/Down adjusts speed) and forwards mouse events to Camera.
+- **Mesh uses index buffers** — `vector<Vertex>` + `vector<glm::uvec3>` for vertex reuse. Backface culling in screen space (CCW = front face, `area < 1e-8f` culls backfaces and degenerate tris).
+- **ObjLoader auto-detects format** — AOV Bezier surfaces (Utah teapot) via custom parser, standard OBJ via tinyobjloader. Normalizes models to unit scale.
+- **Texture support** — `Vertex`/`VertexOutput`/`FragmentInput` carry `glm::vec2 texcoord`. Perspective-correct UV interpolation in Rasterizer. Texture accessed via `const Texture*` pointer in Uniforms (null = fallback to vertex color).
+- **stb_image for image loading** — single-header library in `include/`. `Texture` stores pixels as `vector<Color>` (float normalized) for direct sampling in shaders.
 
 ## Current state
 
-Post-refactoring (commits `bb242c2` through `95718f5`). All five stages complete plus architectural refactoring.
+Post-refactoring (commits `bb242c2` through `95718f5`) plus stages 6–8. All five prototype stages plus three extension stages complete.
 
 | Module | File(s) | Role |
 |--------|---------|------|
-| `Types.h` | `include/Types.h` | `Color` (vec4-based, `alignas(16)`, with `r()/g()/b()/a()` accessors), `Vertex` (pos + color), `VertexOutput`, `FragmentInput`. Depends only on GLM. |
+| `Types.h` | `include/Types.h` | `Color` (vec4-based, `alignas(16)`, with `r()/g()/b()/a()` accessors), `Vertex` (pos + color + texcoord), `VertexOutput`, `FragmentInput`. Depends only on GLM. |
 | `Framebuffer` | `include/Framebuffer.h`, `src/Framebuffer.cpp` | CPU pixel buffer. `clear()`, `setPixel()`, `getPixels()`. |
 | `Screen` | `include/Screen.h`, `src/Screen.cpp` | GLFW window + OpenGL texture upload for display. `present()` uploads RGBA float data via `glTexImage2D`. VSync disabled (`glfwSwapInterval(0)`). |
 | `Pipeline` | `include/Pipeline.h`, `src/Pipeline.cpp` | Stateless: vertex shader → perspective divide → viewport transform → delegates to `Rasterizer::rasterizeTriangle`. `drawTriangle()` + `drawMesh()`. |
-| `Rasterizer` | `include/Rasterizer.h`, `src/Rasterizer.cpp` | Namespace with `rasterizeTriangle()`: edge-function rasterizer with barycentric + perspective-correct interpolation, depth test, fragment shader invocation. |
-| `Shader` | `include/Shader.h`, `src/Shader.cpp` | `VertexShader` (returns `VertexOutput`), `FragmentShader` (returns `Color`), `Uniforms` (model/view/projection), builtin shaders. |
-| `Mesh` | `include/Mesh.h`, `src/Mesh.cpp` | Triangle container. `addTriangle()`, `triangleCount()`, `getVertex()`. |
+| `Rasterizer` | `include/Rasterizer.h`, `src/Rasterizer.cpp` | Namespace with `rasterizeTriangle()`: edge-function rasterizer with backface culling, barycentric + perspective-correct interpolation (color + texcoord), depth test, fragment shader invocation. |
+| `Shader` | `include/Shader.h`, `src/Shader.cpp` | `VertexShader` (returns `VertexOutput`), `FragmentShader` (returns `Color`), `Uniforms` (model/view/projection + `const Texture*`), builtin shaders: `mvp`, `passThrough`, `texture`. |
+| `Mesh` | `include/Mesh.h`, `src/Mesh.cpp` | Indexed triangle container. `addVertex()`, `addIndexedTriangle()`, `addTriangle()`, `triangleCount()`, `getVertex()`. |
 | `DepthBuffer` | `include/DepthBuffer.h`, `src/DepthBuffer.cpp` | Per-pixel depth storage [0,1]. `clear()`, `testAndSet()` (LESS test). |
+| `Texture` | `include/Texture.h`, `src/Texture.cpp` | CPU-side image storage. `loadFromFile()` via stb_image, `sample(uv, filter)` with Nearest/Bilinear, `valid()`. Stores `vector<Color>`. |
+| `ObjLoader` | `include/ObjLoader.h`, `src/ObjLoader.cpp` | Model loading. Auto-detects AOV Bezier format vs standard OBJ (via tinyobjloader). Extracts positions + texcoords, normalizes to unit scale. |
 | `Camera` | `include/Camera.h`, `src/Camera.cpp` | Orbit camera. Spherical coords (`theta/phi/radius`) around target. `viewMatrix()` via `lookAt`, `projectionMatrix()` via `perspective`. Mouse drag/scroll. |
 | `Control` | `include/Control.h`, `src/Control.cpp` | Input dispatch. Forwards mouse to Camera, handles keys (M=toggle auto-rotate, Up/Down=speed). `update(dt)` advances object rotation. |
 | `Renderer` | `include/Renderer.h`, `src/Renderer.cpp` | High-level facade. Owns Framebuffer, DepthBuffer, Pipeline. `beginFrame()`/`draw()`/`endFrame()`. Stores current shader bindings. |
-| `main` | `src/main.cpp` | Creates Screen, Renderer, Camera, Control. Wires GLFW callbacks. Debug profiling (`#ifndef NDEBUG`) reports avg frame time every 60 frames. |
+| `main` | `src/main.cpp` | Creates Screen, Renderer, Camera, Control. Loads model + texture. Wires GLFW callbacks. Debug profiling (`#ifndef NDEBUG`) reports avg frame time every 60 frames. |
 
 ## Key conventions
 

@@ -18,30 +18,46 @@
 // ---------------------------------------------------------------------------
 // 双三次 Bézier 曲面的伯恩斯坦多项式
 // ---------------------------------------------------------------------------
-static float B0(float t) { float u = 1.0f - t; return u * u * u; }
-static float B1(float t) { float u = 1.0f - t; return 3.0f * t * u * u; }
+static float B0(float t) {
+    float u = 1.0f - t;
+    return u * u * u;
+}
+
+static float B1(float t) {
+    float u = 1.0f - t;
+    return 3.0f * t * u * u;
+}
+
 static float B2(float t) { return 3.0f * t * t * (1.0f - t); }
 static float B3(float t) { return t * t * t; }
 
-static float dB0(float t) { float u = 1.0f - t; return -3.0f * u * u; }
-static float dB1(float t) { float u = 1.0f - t; return 3.0f * u * u - 6.0f * t * u; }
+static float dB0(float t) {
+    float u = 1.0f - t;
+    return -3.0f * u * u;
+}
+
+static float dB1(float t) {
+    float u = 1.0f - t;
+    return 3.0f * u * u - 6.0f * t * u;
+}
+
 static float dB2(float t) { return 6.0f * t * (1.0f - t) - 3.0f * t * t; }
 static float dB3(float t) { return 3.0f * t * t; }
 
 // 计算 Bézier 曲面上一点的位置、u向偏导、v向偏导
 static void evalBezier(const glm::vec3 cp[4][4], float u, float v,
                        glm::vec3& pos, glm::vec3& du, glm::vec3& dv) {
-    float bu[4]  = {B0(u), B1(u), B2(u), B3(u)};
-    float bv[4]  = {B0(v), B1(v), B2(v), B3(v)};
+    float bu[4] = {B0(u), B1(u), B2(u), B3(u)};
+    float bv[4] = {B0(v), B1(v), B2(v), B3(v)};
     float dbu[4] = {dB0(u), dB1(u), dB2(u), dB3(u)};
     float dbv[4] = {dB0(v), dB1(v), dB2(v), dB3(v)};
 
     pos = du = dv = glm::vec3(0.0f);
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
-            pos += bv[i] * bu[j]  * cp[i][j];
-            du  += bv[i] * dbu[j] * cp[i][j];
-            dv  += dbv[i] * bu[j]  * cp[i][j];
+            pos += bv[i] * bu[j] * cp[i][j];
+            du += bv[i] * dbu[j] * cp[i][j];
+            dv += dbv[i] * bu[j] * cp[i][j];
         }
     }
 }
@@ -51,7 +67,7 @@ static void evalBezier(const glm::vec3 cp[4][4], float u, float v,
 // ---------------------------------------------------------------------------
 static bool isAOVFormat(const std::string& content) {
     return content.find("TeaSrfs:") != std::string::npos ||
-           content.find("surface(") != std::string::npos;
+        content.find("surface(") != std::string::npos;
 }
 
 static std::vector<std::vector<glm::vec3>> parseAOV(const std::string& content) {
@@ -79,7 +95,7 @@ static std::vector<std::vector<glm::vec3>> parseAOV(const std::string& content) 
         std::vector<glm::vec3> pts;
         size_t ptPos = 0;
         while ((ptPos = block.find("pt(", ptPos)) != std::string::npos) {
-            size_t open  = ptPos + 3;
+            size_t open = ptPos + 3;
             size_t close = block.find(')', open);
             if (close == std::string::npos) break;
 
@@ -93,9 +109,11 @@ static std::vector<std::vector<glm::vec3>> parseAOV(const std::string& content) 
             ptPos = close + 1;
         }
 
-        if (pts.size() == 16) {             // 4×4 双三次曲面片
+        if (pts.size() == 16) {
+            // 4×4 双三次曲面片
             patches.push_back(std::move(pts));
-        } else if (!pts.empty()) {
+        }
+        else if (!pts.empty()) {
             std::fprintf(stderr, "[ObjLoader] 警告: 控制点数量为 %zu 的曲面片被忽略\n",
                          pts.size());
         }
@@ -243,9 +261,16 @@ static Mesh loadStandardObj(const std::string& filePath) {
                 return Color(glm::vec4(c, 0.0f));
             };
 
-            mesh.addVertex(Vertex(glm::vec4(p0, 1.0f), toColor(p0)));
-            mesh.addVertex(Vertex(glm::vec4(p1, 1.0f), toColor(p1)));
-            mesh.addVertex(Vertex(glm::vec4(p2, 1.0f), toColor(p2)));
+            // lambda 获取纹理
+            auto getTexcoord = [&](const tinyobj::index_t& i)-> glm::vec2 {
+                if (i.texcoord_index < 0) return glm::vec2(0.0f);
+                float u = attrib.texcoords[2 * i.texcoord_index + 0];
+                float v = attrib.texcoords[2 * i.texcoord_index + 1];
+                return {u, v};
+            };
+            mesh.addVertex(Vertex(glm::vec4(p0, 1.0f), toColor(p0), getTexcoord(i0)));
+            mesh.addVertex(Vertex(glm::vec4(p1, 1.0f), toColor(p1), getTexcoord(i1)));
+            mesh.addVertex(Vertex(glm::vec4(p2, 1.0f), toColor(p2), getTexcoord(i2)));
             mesh.addIndexedTriangle(vi, vi + 1, vi + 2);
         }
     }

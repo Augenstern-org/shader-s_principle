@@ -7,6 +7,7 @@
 #include "Renderer.h"
 #include "Screen.h"
 #include "Shader.h"
+#include "Texture.h"
 #include "Types.h"
 #include <GLFW/glfw3.h>
 #include <cstdio>
@@ -14,12 +15,17 @@
 
 #ifndef NDEBUG
 #include <chrono>
+
+int frameCount = 0;
+double accFrameTime = 0.0;
+
 #endif
 
 constexpr int WIDTH = 1000;
 constexpr int HEIGHT = 1000;
 constexpr const char* TITLE = "Shader's principle";
-std::string filePath = "assets/oiiai/oiiai.obj";
+const std::string modelPath = "assets/oiiai/oiiai.obj";
+const std::string texturePath = "assets/oiiai/oiiai.png";
 
 int main() {
     Screen screen(WIDTH, HEIGHT, TITLE);
@@ -30,12 +36,17 @@ int main() {
     Control control(camera);
 
     renderer.setVertexShader(VertexShader(BuiltinVertexShader::mvp));
-    renderer.setFragmentShader(FragmentShader(BuiltinFragmentShader::passThrough));
+    renderer.setFragmentShader(FragmentShader(BuiltinFragmentShader::texture));
 
-    Mesh mesh = ObjLoader::load(filePath);
+    Mesh mesh = ObjLoader::load(modelPath);
     if (mesh.triangleCount() == 0) {
         std::fprintf(stderr, "Failed to load model, using fallback triangle\n");
         mesh.createFallbackMesh();
+    }
+
+    Texture texture;
+    if (!texture.loadFromFile(texturePath)) {
+        std::fprintf(stderr, "Failed to load texture, model will use vertex colors\n");
     }
 
     GLFWwindow* window = screen.getWindow();
@@ -73,10 +84,6 @@ int main() {
 
     double lastTime = glfwGetTime();
 
-#ifndef NDEBUG
-    int frameCount = 0;
-    double accFrameTime = 0.0;
-#endif
 
     while (!glfwWindowShouldClose(window)) {
         double currentTime = glfwGetTime();
@@ -90,16 +97,17 @@ int main() {
             glm::rotate(glm::mat4(1.0f), control.objectAngle(), glm::vec3(0.0f, 1.0f, 0.0f));
         uni.view = camera.viewMatrix();
         uni.projection = camera.projectionMatrix();
+        uni.texture = &texture;
 
-#ifndef NDEBUG
+        #ifndef NDEBUG
         auto t0 = std::chrono::high_resolution_clock::now();
-#endif
+        #endif
 
         renderer.beginFrame(Color{0.12f, 0.12f, 0.12f});
         renderer.draw(mesh, uni);
         renderer.endFrame();
 
-#ifndef NDEBUG
+        #ifndef NDEBUG
         auto t1 = std::chrono::high_resolution_clock::now();
         double frameMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         accFrameTime += frameMs;
@@ -109,7 +117,7 @@ int main() {
                          accFrameTime / 60.0, 60000.0 / accFrameTime);
             accFrameTime = 0.0;
         }
-#endif
+        #endif
 
         glfwPollEvents();
     }

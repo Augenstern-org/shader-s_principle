@@ -239,7 +239,8 @@ main (最顶层，组装一切)
 | 阶段 2 | 同上 + Pipeline（简化版） | Pipeline 引入，包含硬编码的光栅化逻辑 |
 | 阶段 3 | + Shader | 顶点着色器从 Pipeline 中抽离为独立模块 |
 | 阶段 4 | Shader 扩展 | 加入片段着色器接口 |
-| 阶段 5 | 可能新增 Texture, DepthBuffer 等模块 | 按需扩展，每次只加一个模块 |
+| 阶段 5 | + Mesh, DepthBuffer, 透视除法 | 装配器支持多三角形，深度缓冲实现逐像素遮挡 |
+| 阶段 6 | + Camera, Control, Renderer, Rasterizer | 重构：光栅化分离、管线无状态化、渲染器门面、相机系统、交互解耦 |
 
 每个阶段结束时，架构仍然"完整"——模块数刚好够用，没有多余的预留。
 

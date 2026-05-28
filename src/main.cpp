@@ -19,6 +19,7 @@
 constexpr int WIDTH = 1000;
 constexpr int HEIGHT = 1000;
 constexpr const char* TITLE = "Shader's principle";
+std::string filePath = "assets/oiiai/oiiai.obj";
 
 int main() {
     Screen screen(WIDTH, HEIGHT, TITLE);
@@ -31,7 +32,7 @@ int main() {
     renderer.setVertexShader(VertexShader(BuiltinVertexShader::mvp));
     renderer.setFragmentShader(FragmentShader(BuiltinFragmentShader::passThrough));
 
-    Mesh mesh = ObjLoader::load("assets/model.obj");
+    Mesh mesh = ObjLoader::load(filePath);
     if (mesh.triangleCount() == 0) {
         std::fprintf(stderr, "Failed to load model, using fallback triangle\n");
         mesh.createFallbackMesh();

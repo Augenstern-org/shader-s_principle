@@ -570,7 +570,7 @@ GLM 的 `glm::uvec3` 是 `glm::vec<3, unsigned int>`，三个分量 `.x`, `.y`, 
 ## 阶段 7：模型加载
 
 **日期**：2026-05-28（规划）  
-**状态**：[ ] 待实现
+**状态**：[x] 已实现
 
 **目标**：引入 `tinyobjloader` 解析 OBJ 模型文件，生成 Mesh，替代手写三角形。
 
@@ -772,18 +772,383 @@ tinyobjloader 默认按面遍历，每个面返回独立的顶点（即使不同
 
 ## 阶段 8：纹理映射
 
-**日期**：（待规划）  
+**日期**：2026-05-28（规划）  
 **状态**：[ ] 待实现
 
-**目标**：支持纹理采样，三角形可贴图片。
+**目标**：CPU 端加载 PNG/JPG 图片，三角形可贴纹理。管线支持 UV 坐标的透视校正插值，片段着色器可采样纹理。
 
-### 概要
+---
 
-- 新建 `Texture` 模块：CPU 端图片存储 + 采样接口
-- 图片加载：`stb_image.h`（单头文件，支持 PNG/JPEG/BMP）
-- 采样模式：最近邻（nearest）+ 双线性（bilinear）
-- FragmentInput 新增 `uv` 字段，Rasterizer 透视校正插值 UV
-- FragmentShader 可通过 `Uniforms` 访问绑定的纹理
+### 一、设计决策
+
+#### 1.1 UV 作为顶点属性，流经整个管线
+
+UV 坐标和颜色（color）一样是**逐顶点属性**。它沿着相同的路径流动：
+
+```
+Vertex.texcoord → VertexShader → VertexOutput.texcoord → Rasterizer 透视校正插值 → FragmentInput.texcoord → FragmentShader.sample()
+```
+
+这意味着 texcoord 需添加到三个结构体中：`Vertex`、`VertexOutput`、`FragmentInput`。
+
+**为什么不把 UV 单独传**：color 已经走通了逐顶点属性 → 光栅化插值 → 片段着色器的完整路径。UV 沿相同路径走，新增代码集中在数据字段上，不改变控制流。Rasterizer 的插值逻辑也只是"多插值一个 vec2"——对称于已有的 color 插值。
+
+#### 1.2 Texture 类：独立的 CPU 图片存储 + 采样
+
+Texture 只做两件事：**存像素**、**按 UV 采样**。它不知道渲染管线、着色器、Mesh 的存在。
+
+为什么独立成类：
+- 图片加载（stb_image）和纹理采样是独立的关注点，和渲染管线逻辑无关（plan.md 原则 2.1 高内聚）
+- 如果将来换图片加载库（如 libpng），只改 Texture 内部
+- 可以独立测试：给一个 UV 坐标，检查返回的颜色对不对
+
+#### 1.3 纹理通过 Uniforms 指针传入片段着色器
+
+`Uniforms` 中新增 `const Texture* texture`（默认为 `nullptr`）。片段着色器通过 `uniforms.texture->sample(uv)` 访问。
+
+**为什么用指针而不是引用或值**：
+- 纹理可能不存在（无纹理时 `nullptr`），着色器回退到顶点颜色——天然支持"有纹理"和"无纹理"两种模式
+- 纹理生命周期由 main/Renderer 管理，Uniforms 只是"借用"——不持有所有权
+- 前向声明 `class Texture;` 即可，Shader.h 不需要 include Texture.h——保持头文件轻量（plan.md 原则 2.2 低耦合）
+
+#### 1.4 透视校正 UV 插值
+
+UV 和颜色一样需要**透视校正插值**——直接线性插值会在斜面上产生纹理扭曲。
+
+公式和颜色插值完全相同：
+
+```
+UV/w 在屏幕空间线性插值，除以 1/w 恢复：
+texcoord = (w0·uv0/w0' + w1·uv1/w1' + w2·uv2/w2') / (w0/w0' + w1/w1' + w2/w2')
+```
+
+Rasterizer 中已有的 `inv_w` 和重心坐标可直接复用，只需额外计算 `uv/w`。
+
+#### 1.5 采样模式：最近邻 + 双线性
+
+| 模式 | 做法 | 效果 |
+|------|------|------|
+| Nearest | `round(uv)` 取最近像素 | 像素块状，调试 UV 映射时更直观 |
+| Bilinear | 4 邻域像素按小数部分 lerp | 平滑过渡 |
+
+默认用双线性（视觉效果正确），最近邻用 `Filter::Nearest` 显式切换。阶段 9 做光照时切换回最近邻可能有助于调试法线。
+
+包裹模式（Wrap/Clamp/Repeat）当前阶段固定为 Clamp-to-edge——UV 超出 `[0,1]` 时夹到边缘。Repeat 模式待需要时再加。
+
+#### 1.6 为什么不在 ObjLoader 中做纹理加载
+
+根据 plan.md 原则 2.1（一个模块只做一件事）：ObjLoader 只负责"把 OBJ 文件转成 Mesh"。纹理图片的加载和采样是 Texture 的职责。两者通过 main.cpp 组装：
+
+```cpp
+Texture tex("model.png");
+Mesh mesh = ObjLoader::load("model.obj");
+Uniforms uni;
+uni.texture = &tex;
+```
+
+这遵循了"单向依赖"原则：ObjLoader 不依赖 Texture，Texture 不依赖 ObjLoader。
+
+---
+
+### 二、文件变更清单
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 修改 | `include/Types.h` | Vertex / VertexOutput / FragmentInput 新增 `glm::vec2 texcoord` |
+| **新建** | `include/Texture.h` | Texture 类声明（width/height、loadFromFile、sample） |
+| **新建** | `src/Texture.cpp` | Texture 实现 + `#define STB_IMAGE_IMPLEMENTATION` |
+| 修改 | `include/Shader.h` | 前向声明 Texture；Uniforms 新增 `const Texture* texture`；BuiltinFragmentShader 新增 `texture` 函数 |
+| 修改 | `src/Shader.cpp` | 实现 `BuiltinFragmentShader::texture`；`BuiltinVertexShader::mvp` 透传 texcoord |
+| 修改 | `src/Rasterizer.cpp` | 插值循环新增 texcoord 的透视校正插值 |
+| 修改 | `src/ObjLoader.cpp` | `loadStandardObj` 提取 texcoord，Vertex 构造包含 UV |
+| 修改 | `src/CMakeLists.txt` | `add_executable` 新增 `Texture.cpp` |
+| 修改 | `src/main.cpp` | 加载纹理图片，绑定到 Uniforms，切换片段着色器 |
+
+无需修改：`Mesh.h/cpp`、`Pipeline.h/cpp`、`Renderer.h/cpp`、`Camera`、`Control`、`Screen`、`Framebuffer`、`DepthBuffer`。
+
+---
+
+### 三、模块设计
+
+#### 3.1 Types.h（修改）
+
+```cpp
+struct Vertex {
+    glm::vec4 position;
+    Color color;
+    glm::vec2 texcoord;  // 新增：纹理坐标，默认 (0,0)
+
+    Vertex() : position(0, 0, 0, 1), texcoord(0.0f) {}
+    Vertex(const glm::vec4& pos) : position(pos), texcoord(0.0f) {}
+    Vertex(const glm::vec4& pos, const Color& c) : position(pos), color(c), texcoord(0.0f) {}
+    Vertex(const glm::vec4& pos, const Color& c, const glm::vec2& uv)
+        : position(pos), color(c), texcoord(uv) {}
+};
+
+struct VertexOutput {
+    glm::vec4 position;
+    Color color;
+    glm::vec2 texcoord;  // 新增
+
+    VertexOutput() : position(0.0f), color() {}
+    VertexOutput(const glm::vec4& p, const Color& c) : position(p), color(c) {}
+    VertexOutput(const glm::vec4& p, const Color& c, const glm::vec2& uv)
+        : position(p), color(c), texcoord(uv) {}
+};
+
+struct FragmentInput {
+    Color color;
+    glm::vec2 texcoord;  // 新增：透视校正插值后的 UV
+
+    FragmentInput(Color c, glm::vec2 uv = glm::vec2(0.0f)) : color(c.data), texcoord(uv) {}
+};
+```
+
+**设计原因**：
+- `texcoord` 默认值 `(0,0)` 确保旧代码（如 `createFallbackMesh()`、AOV Bézier 曲面加载）无需修改即可编译
+- 三参数构造函数供 ObjLoader 使用：`Vertex(pos, color, uv)`
+- `VertexOutput` 的双参数构造函数保持不变（旧着色器兼容），三参数供 `mvp` 着色器使用
+
+#### 3.2 Texture 类
+
+```cpp
+// include/Texture.h
+#ifndef SHADER_S_PRINCIPLE_TEXTURE_H
+#define SHADER_S_PRINCIPLE_TEXTURE_H
+
+#include "Types.h"
+#include <glm/glm.hpp>
+#include <string>
+#include <vector>
+
+class Texture {
+public:
+    enum class Filter { Nearest, Bilinear };
+
+    Texture();
+    ~Texture();
+
+    bool loadFromFile(const std::string& path);
+
+    Color sample(const glm::vec2& uv, Filter filter = Filter::Bilinear) const;
+
+    int width() const { return m_width; }
+    int height() const { return m_height; }
+    bool valid() const { return !m_data.empty(); }
+
+private:
+    std::vector<Color> m_data;
+    int m_width = 0;
+    int m_height = 0;
+};
+
+#endif
+```
+
+**`loadFromFile(path)` 执行流程**：
+```
+1. stbi_set_flip_vertically_on_load(true)  — 翻转 Y 轴，使 UV (0,0) = 左下角（OpenGL 约定）
+2. stbi_load(path, &w, &h, &channels, 4)  — 强制 4 通道（RGBA）
+3. 失败 → 打印 stbi_failure_reason()，返回 false
+4. 将 unsigned char* 转换为 vector<Color>（逐像素归一化到 [0,1]）
+5. stbi_image_free() 释放原始数据
+```
+
+**`sample(uv, filter)` 执行流程**：
+```
+1. Clamp UV 到 [0,1]（Clamp-to-edge 包裹模式）
+2. 转换到像素坐标：px = u * (width - 1), py = v * (height - 1)
+   （注意：这里不使用 -0.5 偏移，因为我们要的是像素索引而非像素中心）
+3. Nearest：取 (round(px), round(py)) 的像素
+4. Bilinear：取 4 邻域像素，按 px/py 的小数部分做双线性插值
+5. 返回 Color
+```
+
+**为什么用 `vector<Color>` 而不是 `unsigned char*`**：
+- Color 是本项目的标准像素类型（float vec4），采样返回 Color 无需每次转换
+- 内存开销不是问题（512×512 纹理 = 4MB float vs 1MB char，学习项目可接受）
+- 双线性插值在 float 空间进行，用 Color 存储避免了每次采样的 uint8→float 转换
+- 如果将来做大场景，再优化为 `uint8_t` 存储 + 采样时转换
+
+#### 3.3 Shader.h / Shader.cpp（修改）
+
+**Uniforms 新增纹理指针**：
+
+```cpp
+class Texture;  // 前向声明
+
+struct Uniforms {
+    glm::mat4 model, view, projection;
+    const Texture* texture = nullptr;  // 新增
+
+    Uniforms();
+};
+```
+
+**新增内置片段着色器**：
+
+```cpp
+namespace BuiltinFragmentShader {
+    Color passThrough(const FragmentInput&, const Uniforms&);
+    Color texture(const FragmentInput&, const Uniforms&);   // 新增：采样纹理
+}
+```
+
+`texture` 实现：
+
+```cpp
+Color BuiltinFragmentShader::texture(const FragmentInput& in, const Uniforms& u) {
+    if (u.texture && u.texture->valid()) {
+        return u.texture->sample(in.texcoord);
+    }
+    return in.color;  // 无纹理时回退到顶点颜色
+}
+```
+
+**顶点着色器 `mvp` 透传 texcoord**：
+
+```cpp
+VertexOutput BuiltinVertexShader::mvp(const Vertex& v, const Uniforms& u) {
+    return {u.projection * u.view * u.model * v.position, v.color, v.texcoord};
+}
+```
+
+#### 3.4 Rasterizer.cpp（修改）
+
+在透视校正插值循环中新增 UV 插值。改动集中在 `rasterizeTriangle` 函数：
+
+**预计算部分（循环外）**——新增 uv/w：
+
+```cpp
+// 已有：
+glm::vec4 c0_div_w = glm::vec4(out0.color) * inv_w0;  // color/w
+// 新增：
+glm::vec2 t0_div_w = out0.texcoord * inv_w0;           // uv/w
+glm::vec2 t1_div_w = out1.texcoord * inv_w1;
+glm::vec2 t2_div_w = out2.texcoord * inv_w2;
+```
+
+**像素循环内**——新增 UV 恢复：
+
+```cpp
+// 已有：
+glm::vec4 color_over_w = c0_div_w * w0 + c1_div_w * w1 + c2_div_w * w2;
+Color inColor(color_over_w / inv_w);
+// 新增：
+glm::vec2 texcoord_over_w = t0_div_w * w0 + t1_div_w * w1 + t2_div_w * w2;
+glm::vec2 texcoord = texcoord_over_w / inv_w;
+
+Color finalColor = fragShader.process(FragmentInput(inColor, texcoord), uniforms);
+```
+
+**FragmentInput 构造变化**：原来是 `FragmentInput(inColor)`，现在变为 `FragmentInput(inColor, texcoord)`——把插值后的 UV 传给片段着色器。
+
+#### 3.5 ObjLoader.cpp（修改）
+
+`loadStandardObj` 中创建 Vertex 时提取 texcoord：
+
+```cpp
+auto getTexcoord = [&](const tinyobj::index_t& idx) -> glm::vec2 {
+    if (idx.texcoord_index < 0) return glm::vec2(0.0f);
+    float u = attrib.texcoords[2 * idx.texcoord_index + 0];
+    float v = attrib.texcoords[2 * idx.texcoord_index + 1];
+    return glm::vec2(u, v);
+};
+
+// Vertex 构造改为三参数：
+mesh.addVertex(Vertex(glm::vec4(p0, 1.0f), toColor(p0), getTexcoord(i0)));
+```
+
+AOV Bézier 曲面路径（`buildMeshFromPatches`）无需修改——它继续使用双参数构造函数 `Vertex(pos, color)`，texcoord 自动为 `(0,0)`。
+
+---
+
+### 四、获取 stb_image
+
+```bash
+wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h \
+     -O include/stb_image.h
+```
+
+在 `src/Texture.cpp` 中：
+
+```cpp
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+```
+
+stb_image 是 MIT/公共领域授权的单头文件库。支持 PNG、JPEG、BMP、GIF、PSD、HDR 等格式。
+
+---
+
+### 五、实现顺序
+
+| 步骤 | 操作 | 原因 |
+|------|------|------|
+| 1 | 修改 `Types.h`：texcoord 加入三个结构体 | 数据层改动。旧代码使用双参数构造函数自动得到 `(0,0)`，编译不受影响 |
+| 2 | 下载 `stb_image.h` → `include/` | 依赖就位 |
+| 3 | 新建 `Texture.h` + `Texture.cpp` | 独立模块，可单独测试（load + sample） |
+| 4 | 修改 `Rasterizer.cpp`：新增 UV 插值 | 插值逻辑改动。此时 passThrough 着色器仍忽略 texcoord，渲染结果不变 |
+| 5 | 修改 `Shader.h` + `Shader.cpp`：Uniforms 加纹理指针 + 新增内置着色器 | 着色器改动。此时仍可编译运行（texture 指针为 nullptr，回退到 vertex color） |
+| 6 | 修改 `ObjLoader.cpp`：提取 texcoord | 模型加载改动 |
+| 7 | 修改 `src/CMakeLists.txt` | 新增 Texture.cpp |
+| 8 | 修改 `main.cpp`：加载纹理 + 绑定 + 切换着色器 | 端到端串联 |
+| 9 | 编译运行 + 验证 | 看到小猫身上出现贴图颜色 |
+
+步骤 4 和 5 之间可任意调换，它们互不依赖。步骤 3 完成后即可在步骤 8 中使用。
+
+---
+
+### 六、关键注意事项
+
+#### 6.1 stb_image Y 轴翻转
+
+**OpenGL UV 约定**：`(0,0)` 在纹理左下角。**stb_image 默认**：`(0,0)` 在图片左上角（第一行像素）。
+
+必须在 `loadFromFile` 中调用 `stbi_set_flip_vertically_on_load(true)` 翻转 Y 轴。否则纹理上下颠倒——小猫的鼻子会在头顶上。
+
+#### 6.2 纹理路径
+
+oiiai 模型的 MTL 引用 `Muchkin2_BaseColor.png`，实际文件在 `assets/oiiai_fbx/textures/Muchkin2_BaseColor.png`。在 main.cpp 中加载时需使用正确路径。或复制纹理到 `assets/` 下统一管理。
+
+当前 `CMakeLists.txt` 的 `POST_BUILD` 只复制了 `assets/` 目录到 build。需确认纹理文件在复制路径中。
+
+#### 6.3 无纹理模型的兼容性
+
+AOV Bézier 曲面（茶壶）和标准 OBJ 都使用相同的 Vertex / VertexOutput 类型。AOV 路径的 Vertex 构造不提供 texcoord → 自动 `(0,0)`。片段着色器 `texture` 在 `texture == nullptr` 时回退到 `in.color`。所有现有模型（茶壶、cube）的行为保持不变。
+
+#### 6.4 UV 超出 [0,1] 的处理
+
+当前阶段固定 Clamp-to-edge：`sample()` 内将 UV 夹到 `[0,1]`。不使用 Repeat 模式——现阶段没有需要 tiling 纹理的场景。当 UV 在 `[0,1]` 之外时，Clamp 产生"边缘拉伸"效果，这比 Repeat 更容易发现 UV 映射问题。
+
+#### 6.5 双线性插值的边界条件
+
+当 UV 落在像素 `(x, y)` 和 `(x+1, y+1)` 之间时，取 4 个邻域像素。边界像素（如 `x+1 >= width`）的邻域 clamp 到边缘。具体实现中——先 clamp 像素坐标，再做 lerp——避免了越界访问。
+
+#### 6.6 Rasterizer 参数不变
+
+UV 在 `VertexOutput` 中而非 Rasterizer 的独立参数——`rasterizeTriangle` 的函数签名不变。插值逻辑的改动是对称的：color 怎么插值，texcoord 就怎么插值。这避免了 Rasterizer 接口膨胀。
+
+#### 6.7 顶点颜色 × 纹理颜色
+
+当前阶段片段着色器直接返回纹理采样结果。阶段 9 光照时，纹理颜色会作为漫反射的 `baseColor` 输入。可以在 `texture` 着色器中加入 `in.color * sample(...)` 的选项，用顶点颜色调制纹理——但当前阶段保持简单：纹理采样颜色直出。
+
+#### 6.8 OBJ 的 texcoord 索引可能为 -1
+
+tinyobjloader 中 `idx.texcoord_index == -1` 表示该面没有纹理坐标（如纯几何模型）。ObjLoader 检测到 `-1` 时返回 `(0,0)`——三角形将被贴纹理的 `(0,0)` 处像素（通常是纹理左下角颜色），表现上是一块纯色区域。
+
+---
+
+### 七、验证方法
+
+1. **编译通过**：`ninja -C build` 无错误，无新增警告
+2. **无纹理回退**：不加载纹理时，`passThrough` 着色器的渲染效果和之前完全一致（vertex color 显示正确的模型形状）
+3. **纹理加载成功**：`Texture::loadFromFile` 返回 true，`valid()` 返回 true，`width()/height()` 匹配实际图片
+4. **小猫贴纹理**：加载 `oiiai.obj` + `Muchkin2_BaseColor.png`，屏幕上小猫显示正确纹理颜色
+5. **无纹理模型兼容**：茶壶（AOV Bézier）继续使用 vertex color 渲染，行为不变
+6. **最近邻 vs 双线性**：切换 Filter 模式后能观察到块状 vs 平滑的差异
+7. **透视校正**：旋转模型到倾斜角度时，纹理无扭曲/滑动感（和非透视校正插值对比，差异明显）
+8. **交互正常**：鼠标旋转缩放、键盘 M/Up/Down 均正常工作
 
 ---
 
@@ -828,7 +1193,8 @@ shader-s_principle/
 │   ├── Renderer.h          ← 重构新建
 │   ├── Control.h           ← 重构新建（原计划外）
 │   ├── Texture.h           ← 阶段 8 新建
-│   └── ObjLoader.h         ← 阶段 7 新建
+│   ├── ObjLoader.h         ← 阶段 7 新建
+│   └── stb_image.h         ← 阶段 8 新建（第三方单头文件）
 └── src/
     ├── CMakeLists.txt
     ├── main.cpp
